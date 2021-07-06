@@ -159,6 +159,49 @@ public:
     assert(Indent == StartingIndent
               && "unbalanced indentation changes during dump");
   }
+
+private:
+  friend class ASTNodeDumper;
+
+  void indent() { OS.indent(Indent); }
+  void newLine() { OS << '\n'; }
+  void newField() { OS << ' '; }
+
+  template <typename Fn>
+  void printPlain(TerminalColor color, Fn body) {
+    PrintWithColorRAII colorized(OS, color);
+    body(OS);
+  }
+
+  void printPlain(StringRef text, TerminalColor color) {
+    printPlain(color, [&](auto &os) { os << text; });
+  }
+
+  void printPlain(const char *text, TerminalColor color) {
+    printPlain(StringRef(text), color);
+  }
+
+  template <typename Fn>
+  void printQuoted(TerminalColor color, Fn body) {
+    printPlain(color, [&](auto &os) {
+      OS << "'";
+      body(OS);
+      OS << "'";
+    });
+  }
+
+  template <typename T>
+  void printValue(T &value, TerminalColor color) {
+    printQuoted(color, [&](raw_ostream &os) {
+      printValue(value, os);
+    });
+  }
+
+  template <typename T>
+  void printValue(T &value, raw_ostream &os);
+
+  template <typename T>
+  StringRef getFlag(T &value, StringRef &label, SmallVectorImpl<char> &scratch);
 };
 
 /// Helper class for dumping an AST node.
@@ -170,19 +213,10 @@ public:
 class ASTNodeDumper {
   ASTDumper *Dumper;
 
-  raw_ostream &os() {
-    assert(Dumper && "printing from inactive ASTNodeDumper");
-
-    // Dumper->Indent is briefly less-than during construction and destruction.
-    assert(Dumper->Indent <= IndentChildren &&
-              "printing from parent ASTNodeDumper");
-    
-    return Dumper->OS;
-  }
-
-  ASTContext *ctx() {
-    assert(Dumper && "getting context from inactive ASTNodeDumper");
-    return Dumper->Ctx;
+  ASTDumper &dumper() {
+    assert(Dumper && Dumper->Indent == IndentChildren &&
+           "printing from wrong ASTNodeDumper");
+    return *Dumper;
   }
 
 public:
@@ -192,12 +226,13 @@ public:
                 TerminalColor Color)
     : Dumper(&dumper), IndentChildren(dumper.Indent + 2)
   {
-    os().indent(dumper.Indent /* note this is parent indentation */);
-    PrintWithColorRAII(os(), ParenthesisColor) << '(';
-    PrintWithColorRAII(os(), LabelColor) << Label;
-    if (!Label.empty())
-      PrintWithColorRAII(os(), LabelColor) << "=";
-    PrintWithColorRAII(os(), Color) << Name;
+    dumper.indent();    // Note that we're still at parent's indentation here.
+    dumper.printPlain("(", ParenthesisColor);
+    if (!Label.empty()) {
+      dumper.printPlain(Label, LabelColor);
+      dumper.printPlain("=", LabelColor);
+    }
+    dumper.printPlain(Name, Color);
 
     dumper.Indent = IndentChildren;
   }
@@ -225,22 +260,15 @@ public:
   ~ASTNodeDumper() {
     if (!Dumper) return;
 
-    PrintWithColorRAII(os(), ParenthesisColor) << ')';
-
-    // This should be an assertion, but we don't want to crash in the middle of
-    // an AST dump just because it's not formatted correctly.
-    if (Dumper->Indent != IndentChildren)
-      PrintWithColorRAII(os(), { llvm::raw_ostream::RED, true })
-          << " <<INTERNAL WARNING: node destruction unbalanced>> ";
-
-    Dumper->Indent -= 2;
+    dumper().printPlain(")", ParenthesisColor);
+    dumper().Indent -= 2;
 
     Dumper = nullptr;
   }
 
   ASTNodeDumper child(const char *Name, StringRef Label, TerminalColor Color) {
-    os() << '\n';
-    return ASTNodeDumper(*Dumper, Name, Label, Color);
+    dumper().newLine();
+    return ASTNodeDumper(dumper(), Name, Label, Color);
   }
 
   void printRec(Decl *D, StringRef Label = "");
@@ -295,131 +323,71 @@ public:
   }
 
   void printLabel(StringRef label, TerminalColor Color = DeclModifierColor) {
-    os() << " ";
-    PrintWithColorRAII(os(), Color) << label;
-    if (!label.empty())
-      PrintWithColorRAII(os(), Color) << "=";
+    dumper().newField();
+    if (label.empty()) return;
+    dumper().printPlain(label, Color);
+    dumper().printPlain("=", Color);
   }
-
-  // To explain the terrifying template goop: The first overload handles
-  // non-integers and adds quotes around the value; the second handles integers
-  // and doesn't.
 
   /// Print a field with a quoted value and an optional label.
-  template <
-      typename T,
-      typename std::enable_if<!std::is_integral<T>::value>::type * = nullptr>
+  template <typename T>
   void print(const T &value, StringRef label = "",
              TerminalColor Color = DeclModifierColor) {
     printLabel(label, Color);
-    PrintWithColorRAII(os(), Color) << "'" << value << "'";
+    dumper().printValue(value, Color);
   }
 
-  /// Print a field with a value and an optional label.
-  template <
-      typename T,
-      typename std::enable_if<std::is_integral<T>::value>::type * = nullptr>
-  void print(const T &value, StringRef label = "",
-             TerminalColor Color = DeclModifierColor) {
+  /// Print a field with several quoted values and an optional label.
+  template <typename C>
+  void printMany(const C &values, StringRef label = "",
+                 TerminalColor color = DeclModifierColor) {
+    printLabel(label, color);
+
+    dumper().printPlain("(", ParenthesisColor);
+    llvm::interleave(values,
+        [&](const auto &value) { dumper().printValue(value, color); },
+        [&]{ dumper().newField(); });
+    dumper().printPlain(")", ParenthesisColor);
+  }
+
+  /// Print a single flag if it is set.
+  ///
+  /// A flag's value is a type like an enum that can be printed as a short, unquoted string.
+  /// Nothing will be printed if the value is a "default" or "empty" value. Booleans are printed
+  /// with only the label.
+  template <typename T>
+  void printFlag(const T &value, StringRef label = "",
+                 TerminalColor Color = DeclModifierColor) {
+    SmallString<16> scratch;
+    StringRef valueString = dumper().getFlag(value, label, scratch);
+    if (valueString.empty()) return;
     printLabel(label, Color);
-    PrintWithColorRAII(os(), Color) << value;
-  }
-
-  void print(TypeBase *value, StringRef label = "",
-             TerminalColor Color = DeclModifierColor) {
-    // Without this overload, TypeBase * gets printed as a pointer address.
-    print(Type(value), label, Color);
-  }
-
-  void print(SourceLoc value, StringRef label = "",
-             TerminalColor Color = DeclModifierColor) {
-    if (!ctx()) return;
-
-    printLabel(label, Color);
-    PrintWithColorRAII colorized(os(), Color);
-    os() << "'";
-    if (value.isValid())
-      value.print(os(), ctx()->SourceMgr);
-    else
-      os() << "<<invalid>>";
-    os() << "'";
-  }
-
-  void print(LayoutConstraint layout, StringRef label = "",
-             TerminalColor Color = DeclModifierColor) {
-    printLabel(label, Color);
-    PrintWithColorRAII colorized(os(), Color);
-    os() << "'";
-    layout->print(os());
-    os() << "'";
+    dumper().printPlain(valueString, Color);
   }
 
   /// Print a single flag.
   void printFlag(StringRef label, TerminalColor Color = DeclModifierColor) {
-    PrintWithColorRAII(os(), Color) << " " << label;
+    printFlag(true, label);
   }
-
-  /// Print a single flag if it is set.
-  void printFlag(bool isSet, StringRef label,
-                 TerminalColor Color = DeclModifierColor) {
-    if (isSet)
-      printFlag(label, Color);
-  }
-
-  /// Print a single flag with a string value. Use this instead of print() when
-  /// you know the value will be a short, fixed string and you don't want it
-  /// quoted.
-  void printFlag(StringRef value, StringRef label,
-                 TerminalColor Color = DeclModifierColor) {
-    printLabel(label, Color);
-    PrintWithColorRAII(os(), Color) << value;
-  }
-
-  /// Print a single flag with a string value. Use this instead of print() when
-  /// you know the value will be a short, fixed string and you don't want it
-  /// quoted.
-  void printFlag(const char *value, StringRef label,
-                 TerminalColor Color = DeclModifierColor) {
-    printFlag(StringRef(value), label, Color);
-  }
-
 
   /// Print the name of a declaration being referenced.
   void printDeclRef(ConcreteDeclRef declRef, StringRef label,
                     TerminalColor Color = DeclColor) {
-    printLabel(label, Color);
-
-    PrintWithColorRAII colorized(os(), Color);
-    os() << "'";
-    declRef.dump(os());
-    os() << "'";
+    print(declRef, label, Color);
   }
 
   /// Pretty-print a TypeRepr.
   void printTypeRepr(TypeRepr *T, StringRef label) {
-    printLabel(label, TypeReprColor);
-
-    PrintWithColorRAII colorized(os(), TypeReprColor);
-    os() << "'";
-    if (T)
-      T->print(os());
-    else
-      os() << "<<null>>";
-    os() << "'";
-  }
-
-  void printGenericParameters(GenericParamList *Params, StringRef label = "") {
-    if (!Params)
-      return;
-    printLabel(label, DeclModifierColor);
-    Params->print(PrintWithColorRAII(os(), DeclModifierColor).getOS());
+    print(T, label, TypeReprColor);
   }
 
 private:
   template <typename Name>
   void printNodeNameImpl(Name name, StringRef label) {
     printLabel(label, IdentifierColor);
-    PrintWithColorRAII(os(), IdentifierColor) << '"' << name << '"';
+    dumper().printPlain(IdentifierColor, [&](auto &os) {
+      os << '"' << name << '"';
+    });
   }
 
 public:
@@ -427,7 +395,8 @@ public:
   /// this to just print DeclNameRefs in general; only use it for a declaration
   /// name that the node "is".
   void printNodeName(StringRef name) {
-    printNodeNameImpl(name, "");
+    // No guarantee the string won't need escaping, so we'll use QuotedString.
+    print(QuotedString(name), "", IdentifierColor);
   }
 
   /// Print the name of the node we are currently dumping. Do not use
@@ -474,86 +443,60 @@ public:
 
   void printNodeArgLabels(ArrayRef<Identifier> argLabels) {
     printLabel("arg_labels", ArgumentsColor);
-    for (auto label : argLabels) {
-      PrintWithColorRAII(os(), ArgumentsColor)
-        << (label.empty() ? "_" : label.str()) << ":";
-    }
+    dumper().printQuoted(ArgumentsColor, [&](auto &os) {
+      for (auto label : argLabels)
+        os << (label.empty() ? "_" : label.str()) << ":";
+    });
   }
 
   void printNodeCaptureInfo(const CaptureInfo &capInfo, StringRef label = "") {
     if (capInfo.isTrivial()) return;
 
     // Wierdly, the dump string includes a label.
-    printLabel("");
-    if (!label.empty())
-      PrintWithColorRAII(os(), CapturesColor) << label << '_';
-
-    capInfo.print(PrintWithColorRAII(os(), CapturesColor).getOS());
+    dumper().newField();
+    dumper().printPlain(CapturesColor, [&](auto &os) {
+      os << label << '_';
+      capInfo.print(os);
+    });
   }
 
   /// Print the source range of the node we are currently displaying. Do not use
   /// this to just print SourceRanges in general; only use it for the range
   /// of the current node.
   void printNodeRange(SourceRange R) {
-    if (ctx() && R.isValid()) {
-      printLabel("range", RangeColor);
-      PrintWithColorRAII colorized(os(), RangeColor);
-      os() << "'";
-      R.print(os(), ctx()->SourceMgr, /*PrintText=*/false);
-      os() << "'";
-    }
+    if (!dumper().Ctx || !R.isValid()) return;
+    print(R, "range", RangeColor);
   }
 
   /// Print the source location of the node we are currently displaying. Do not
   /// use this to just print SourceLocs in general; only use it for the location
   /// of the current node.
   void printNodeLocation(SourceLoc L) {
-    if (!L.isValid()) return;
+    if (!dumper().Ctx || !L.isValid()) return;
     print(L, "location", LocationColor);
   }
 
   template <typename T>
   void printNodeLiteralValue(const T &value, StringRef label = "") {
     printLabel(label, LiteralValueColor);
-    PrintWithColorRAII(os(), LiteralValueColor) << value;
+    dumper().printPlain(LiteralValueColor, [&](auto &os) { os << value; });
   }
 
-private:
-  void printNodeTypeImpl(Type Ty, StringRef label, TerminalColor color) {
-    printLabel(label, color);
-
-    PrintOptions PO;
-    PO.PrintTypesForDebugging = true;
-
-    PrintWithColorRAII colored(os(), color);
-    os() << "'";
-    if (Ty)
-      Ty.print(os(), PO);
-    else
-      os() << "<null type>";
-    os() << "'";
-  }
-
-public:
   /// Print the type of the node we are currently displaying. Do not use this to
   /// just print types in general; only use it for the type of the current node.
   void printNodeType(Type Ty) {
-    printNodeTypeImpl(Ty, "type", TypeColor);
+    print(Ty, "type", TypeColor);
   }
 
   /// Print the interface type of the node we are currently displaying. Do not
   /// use this to just print interface types in general; only use it for the
   /// type of the current node.
   void printNodeInterfaceType(Type Ty) {
-    printNodeTypeImpl(Ty, "interface type", InterfaceTypeColor);
+    print(Ty, "interface type", InterfaceTypeColor);
   }
 
   void printNodeAccess(AccessLevel level) {
-    printFlag(getAccessLevelSpelling(level), "access", AccessLevelColor);
-  }
-
-  void printNodeFunctionRefKind(FunctionRefKind kind) {
-    printFlag(getFunctionRefKindStr(kind), "function_ref", ExprModifierColor);
+    printFlag(level, "access", AccessLevelColor);
   }
 
   void printNodeAccessSemantics(AccessSemantics semantics);
@@ -564,19 +507,19 @@ public:
 
   template <typename T>
 //  [[deprecated]]
-  friend ASTNodeDumper &operator << (ASTNodeDumper &dumper, const T &value) {
-    dumper.os() << value;
-    return dumper;
+  friend ASTNodeDumper &operator << (ASTNodeDumper &dump, const T &value) {
+    dump.dumper().OS << value;
+    return dump;
   }
 
 //  [[deprecated]]
   raw_ostream &getOS() {
-    return os();
+    return dumper().OS;
   }
 
 //  [[deprecated]]
   PrintWithColorRAII colored(TerminalColor color) {
-    return PrintWithColorRAII(os(), color);
+    return PrintWithColorRAII(dumper().OS, color);
   }
 };
 } // end anonymous namespace
@@ -754,10 +697,149 @@ StringRef swift::getCtorInitializerKindString(CtorInitializerKind value) {
   llvm_unreachable("Unhandled CtorInitializerKind in switch.");
 }
 
-void ASTNodeDumper::printNodeAccessSemantics(AccessSemantics semantics) {
-  if (semantics == AccessSemantics::Ordinary) return;
-  printFlag(getAccessSemanticsString(semantics), AccessLevelColor);
+namespace ast_dump_format {
+
+//
+// `printValue()` overloads define the printing behavior when you pass a
+// particular type to `ASTNodeDumper::print()`.
+//
+
+// Template goop here excludes integers; they should be printed with
+// `printFlag()` instead.
+template <
+    typename T,
+    typename std::enable_if<!std::is_integral<T>::value>::type * = nullptr>
+void printValue(const T &value, raw_ostream &os, ASTContext *ctx) {
+  os << value;
 }
+
+//template<typename Fn>
+//void printValue(Fn body, raw_ostream &os, ASTContext *ctx) {
+//  body(os, ctx);
+//}
+
+void printValue(SourceLoc value, raw_ostream &os, ASTContext *ctx) {
+  if (value.isInvalid()) os << "<<invalid>>";
+  else if (!ctx) os << "<<valid>>";
+  else value.print(os, ctx->SourceMgr);
+}
+
+void printValue(SourceRange value, raw_ostream &os, ASTContext *ctx) {
+  if (value.isInvalid()) os << "<<invalid>>";
+  else if (!ctx) os << "<<valid>>";
+  else value.print(os, ctx->SourceMgr, /*PrintText=*/false);
+}
+
+void printValue(LayoutConstraint layout, raw_ostream &os, ASTContext *ctx) {
+  layout->print(os);
+}
+
+void printValue(ConcreteDeclRef declRef, raw_ostream &os, ASTContext *ctx) {
+  declRef.dump(os);
+}
+
+void printValue(ValueDecl* VD, raw_ostream &os, ASTContext *ctx) {
+  printValue(ConcreteDeclRef(VD), os, ctx);
+}
+
+void printValue(TypeRepr *T, raw_ostream &os, ASTContext *ctx) {
+  if (T) T->print(os);
+  else os << "<<null>>";
+}
+
+void printValue(GenericParamList *Params, raw_ostream &os, ASTContext *ctx) {
+  if (Params) Params->print(os);
+  else os << "<<null>>";
+}
+
+void printValue(Type Ty, raw_ostream &os, ASTContext *ctx) {
+  PrintOptions PO;
+  PO.PrintTypesForDebugging = true;
+
+  if (Ty) Ty.print(os, PO);
+  else os << "<null type>";
+}
+
+void printValue(TypeBase *value, raw_ostream &os, ASTContext *ctx) {
+  // Without this overload, TypeBase * gets printed as a pointer address.
+  printValue(Type(value), os, ctx);
+}
+
+//
+// `getFlag()` overloads define the behavior when you pass a particular type to
+// `ASTNodeDumper::printFlag()`.
+//
+// If `getFlag()` returns an empty string, the whole flag will be omitted. If
+// it sets the label to empty, the label will be omitted.
+//
+
+StringRef getFlag(bool value, StringRef &label,
+                  SmallVectorImpl<char> &scratch) {
+  if (!value) return "";
+  auto newValue = label;
+  label = "";
+  return newValue;
+}
+
+// Template goop here matches integer types.
+template <
+    typename IntTy,
+    typename std::enable_if<std::is_integral<IntTy>::value>::type * = nullptr>
+StringRef getFlag(const IntTy &value, StringRef &label,
+                  SmallVectorImpl<char> &scratch) {
+  llvm::raw_svector_ostream(scratch) << value;
+  return StringRef(scratch.begin(), scratch.size());
+}
+
+#define FLAG_ALWAYS(T, FN) \
+StringRef getFlag(T value, StringRef &label, \
+                  SmallVectorImpl<char> &scratch) { \
+  return FN(value); \
+}
+#define FLAG(T, FN, DEFAULT_VALUE) \
+StringRef getFlag(T value, StringRef &label, \
+                SmallVectorImpl<char> &scratch) { \
+  if (value == T::DEFAULT_VALUE) return ""; \
+  return FN(value); \
+}
+
+FLAG(SILFunctionType::Representation, getSILFunctionTypeRepresentationString,
+     Thick)
+FLAG_ALWAYS(ReadImplKind, getReadImplKindName)
+FLAG(WriteImplKind, getWriteImplKindName, Immutable)
+FLAG(ReadWriteImplKind, getReadWriteImplKindName, Immutable)
+FLAG(ImportKind, getImportKindString, Module)
+FLAG_ALWAYS(ForeignErrorConvention::Kind, getForeignErrorConventionKindString)
+FLAG(DefaultArgumentKind, getDefaultArgumentKindString, None)
+FLAG_ALWAYS(ObjCSelectorExpr::ObjCSelectorKind, getObjCSelectorExprKindString)
+FLAG(AccessSemantics, getAccessSemanticsString, Ordinary)
+FLAG_ALWAYS(MetatypeRepresentation, getMetatypeRepresentationString)
+FLAG_ALWAYS(StringLiteralExpr::Encoding, getStringLiteralExprEncodingString)
+FLAG_ALWAYS(CtorInitializerKind, getCtorInitializerKindString)
+FLAG_ALWAYS(AccessLevel, getAccessLevelSpelling)
+FLAG_ALWAYS(FunctionRefKind, getFunctionRefKindStr)
+FLAG_ALWAYS(CheckedCastKind, getCheckedCastKindName)
+FLAG_ALWAYS(Associativity, getAssociativitySpelling)
+FLAG_ALWAYS(MagicIdentifierLiteralExpr::Kind,
+            MagicIdentifierLiteralExpr::getKindString)
+
+#undef FLAG
+#undef FLAG_ALWAYS
+
+}
+
+template <typename T>
+void ASTDumper::printValue(T &value, raw_ostream &os) {
+  ast_dump_format::printValue(value, os, Ctx);
+}
+
+template <typename T>
+StringRef
+ASTDumper::getFlag(T &value, StringRef &label, SmallVectorImpl<char> &scratch) {
+  return ast_dump_format::getFlag(value, label, scratch);
+}
+
+
 
 //===----------------------------------------------------------------------===//
 //  Decl printing.
@@ -803,13 +885,9 @@ namespace {
     void visitTuplePattern(TuplePattern *P, StringRef Label) {
       auto dump = printCommon(P, "pattern_tuple", Label);
 
-      dump.printLabel("names");
-      interleave(P->getElements(),
-                 [&](const TuplePatternElt &elt) {
-                   auto name = elt.getLabel();
-                   dump << (name.empty() ? "''" : name.str());
-                 },
-                 [&] { dump << ","; });
+      dump.printMany(map_range(P->getElements(),
+                               [&](auto elt) { return elt.getLabel(); }),
+                     "names");
 
       for (auto &elt : P->getElements())
         dump.printRec(elt.getPattern());
@@ -831,7 +909,7 @@ namespace {
 
     void visitIsPattern(IsPattern *P, StringRef Label) {
       auto dump = printCommon(P, "pattern_is", Label);
-      dump.printFlag(getCheckedCastKindName(P->getCastKind()));
+      dump.printFlag(P->getCastKind());
       dump.print(P->getCastType(), "cast_type", TypeColor);
       if (auto sub = P->getSubPattern())
         dump.printRec(sub);
@@ -908,10 +986,9 @@ namespace {
     void printInherited(ASTNodeDumper &dump, ArrayRef<TypeLoc> Inherited) {
       if (Inherited.empty())
         return;
-      dump << " inherits: ";
-      interleave(Inherited,
-                 [&](TypeLoc Super) { Super.getType().print(dump.getOS()); },
-                 [&] { dump << ", "; });
+      dump.printMany(llvm::map_range(Inherited,
+                         [&](TypeLoc Super) { return Super.getType(); }),
+                     "inherits", TypeColor);
     }
 
   public:
@@ -920,8 +997,7 @@ namespace {
 
       dump.printFlag(ID->isExported(), "exported");
 
-      if (ID->getImportKind() != ImportKind::Module)
-        dump.printFlag(getImportKindString(ID->getImportKind()), "kind");
+      dump.printFlag(ID->getImportKind(), "kind");
 
       SmallString<64> scratch;
       ID->getImportPath().getString(scratch);
@@ -976,8 +1052,8 @@ namespace {
     void visitGenericTypeParamDecl(GenericTypeParamDecl *decl, StringRef Label) {
       auto dump = printAbstractTypeParamCommon(decl, "generic_type_param",
                                                Label);
-      dump.print(decl->getDepth(), "depth");
-      dump.print(decl->getIndex(), "index");
+      dump.printFlag(decl->getDepth(), "depth");
+      dump.printFlag(decl->getIndex(), "index");
     }
 
     void visitAssociatedTypeDecl(AssociatedTypeDecl *decl, StringRef Label) {
@@ -987,15 +1063,9 @@ namespace {
         dump.print(defaultDef, "default");
       printWhereRequirements(dump, decl);
 
-      if (decl->overriddenDeclsComputed()) {
-        dump .printLabel("overridden", OverrideColor);
-        interleave(decl->getOverriddenDecls(),
-                   [&](AssociatedTypeDecl *overridden) {
-                     dump.colored(OverrideColor) << overridden->getProtocol()->getName();
-                   }, [&]() {
-                     dump << ", ";
-                   });
-      }
+      if (decl->overriddenDeclsComputed())
+        dump .printMany(decl->getOverriddenDecls(), "overridden",
+                        OverrideColor);
     }
 
     void visitProtocolDecl(ProtocolDecl *PD, StringRef Label) {
@@ -1018,9 +1088,11 @@ namespace {
 
       dump.printNodeName(VD);
       if (auto *AFD = dyn_cast<AbstractFunctionDecl>(VD))
-        dump.printGenericParameters(AFD->getParsedGenericParams());
+        if (auto params = AFD->getParsedGenericParams())
+          dump.print(params);
       if (auto *GTD = dyn_cast<GenericTypeDecl>(VD))
-        dump.printGenericParameters(GTD->getParsedGenericParams());
+        if (auto params = GTD->getParsedGenericParams())
+          dump.print(params);
 
       if (auto *var = dyn_cast<VarDecl>(VD)) {
         if (var->hasInterfaceType())
@@ -1037,16 +1109,8 @@ namespace {
 
       if (VD->overriddenDeclsComputed()) {
         auto overridden = VD->getOverriddenDecls();
-        if (!overridden.empty()) {
-          dump.printLabel("override", OverrideColor);
-          interleave(overridden,
-                     [&](ValueDecl *overridden) {
-                       overridden->dumpRef(
-                                dump.colored(OverrideColor).getOS());
-                     }, [&]() {
-                       dump << ", ";
-                     });
-        }
+        if (!overridden.empty())
+          dump.printMany(overridden, "override", OverrideColor);
       }
 
       auto VarD = dyn_cast<VarDecl>(VD);
@@ -1121,14 +1185,10 @@ namespace {
 
       if (D->hasInterfaceType()) {
         auto impl = D->getImplInfo();
-        dump.printFlag(getReadImplKindName(impl.getReadImpl()), "readImpl");
+        dump.printFlag(impl.getReadImpl(), "readImpl");
         dump.printFlag(!impl.supportsMutation(), "immutable");
-
-        if (impl.supportsMutation()) {
-          dump.printFlag(getWriteImplKindName(impl.getWriteImpl()), "writeImpl");
-          dump.printFlag(getReadWriteImplKindName(impl.getReadWriteImpl()),
-                         "readWriteImpl");
-        }
+        dump.printFlag(impl.getWriteImpl(), "writeImpl");
+        dump.printFlag(impl.getReadWriteImpl(), "readWriteImpl");
       }
     }
 
@@ -1165,9 +1225,7 @@ namespace {
       dump.printFlag(PD->getAttrs().hasAttribute<NonEphemeralAttr>(),
                      "nonEphemeral");
 
-      if (PD->getDefaultArgumentKind() != DefaultArgumentKind::None)
-        dump.print(getDefaultArgumentKindString(PD->getDefaultArgumentKind()),
-                   "default_arg_kind");
+      dump.printFlag(PD->getDefaultArgumentKind(), "default_arg_kind");
 
       if (PD->hasDefaultExpr())
         dump.printNodeCaptureInfo(PD->getDefaultArgumentCaptureInfo(),
@@ -1252,10 +1310,10 @@ namespace {
                                    AbstractFunctionDecl *D) {
       if (auto fac = D->getForeignAsyncConvention()) {
         auto childDump = dump.child("foreign_async", "", DeclModifierColor);
-        childDump.print(fac->completionHandlerParamIndex(),
-                        "completion_handler_param_index");
+        childDump.printFlag(fac->completionHandlerParamIndex(),
+                            "completion_handler_param_index");
         if (auto errorParamIndex = fac->completionHandlerErrorParamIndex())
-          childDump.print(*errorParamIndex, "error_param_index");
+          childDump.printFlag(*errorParamIndex, "error_param_index");
 
         if (auto type = fac->completionHandlerType())
           childDump.print(type, "completion_handler_type");
@@ -1263,13 +1321,12 @@ namespace {
 
       if (auto fec = D->getForeignErrorConvention()) {
         auto childDump = dump.child("foreign_error", "", DeclModifierColor);
-        childDump.printFlag(getForeignErrorConventionKindString(fec->getKind()),
-                            "kind");
+        childDump.printFlag(fec->getKind(), "kind");
 
         bool isOwned = (fec->isErrorOwned() == ForeignErrorConvention::IsOwned);
         childDump.printFlag(isOwned ? "owned" : "unowned");
 
-        childDump.print(fec->getErrorParameterIndex(), "param_index");
+        childDump.printFlag(fec->getErrorParameterIndex(), "param_index");
         childDump.print(fec->getErrorParameterType(), "param_type");
 
         bool wantResultType = (
@@ -1317,7 +1374,7 @@ namespace {
     void visitConstructorDecl(ConstructorDecl *CD, StringRef Label) {
       auto dump = printCommonAFD(CD, "constructor_decl", Label);
       dump.printFlag(CD->isRequired(), "required");
-      dump.printFlag(getCtorInitializerKindString(CD->getInitKind()));
+      dump.printFlag(CD->getInitKind());
       if (CD->isFailable())
         dump.print((CD->isImplicitlyUnwrappedOptional()
                     ? "ImplicitlyUnwrappedOptional"
@@ -1359,8 +1416,7 @@ namespace {
       auto dump = printCommon(PGD, "precedence_group_decl", Label);
 
       dump.printNodeName(PGD->getName());
-      dump.printFlag(getAssociativitySpelling(PGD->getAssociativity()),
-                     "associativity");
+      dump.printFlag(PGD->getAssociativity(), "associativity");
       dump.printFlag(PGD->isAssignment(), "assignment");
 
       auto printRelations =
@@ -1780,20 +1836,20 @@ void ASTNodeDumper::printRec(StmtConditionElement C, StringRef Label) {
 }
 
 void ASTNodeDumper::printRec(AvailabilitySpec *Query, StringRef Label) {
-  os() << '\n';
+  dumper().newLine();
   switch (Query->getKind()) {
   case AvailabilitySpecKind::PlatformVersionConstraint:
     cast<PlatformVersionConstraintAvailabilitySpec>(Query)
-        ->print(os(), IndentChildren);
+        ->print(dumper().OS, IndentChildren);
     break;
   case AvailabilitySpecKind::LanguageVersionConstraint:
   case AvailabilitySpecKind::PackageDescriptionVersionConstraint:
     cast<PlatformVersionConstraintAvailabilitySpec>(Query)
-        ->print(os(), IndentChildren);
+        ->print(dumper().OS, IndentChildren);
     break;
   case AvailabilitySpecKind::OtherPlatform:
     cast<OtherPlatformAvailabilitySpec>(Query)
-        ->print(os(), IndentChildren);
+        ->print(dumper().OS, IndentChildren);
     break;
   }
 
@@ -1925,8 +1981,7 @@ public:
 
     dump.printNodeLiteralValue(QuotedString(E->getValue()));
 
-    dump.printFlag(getStringLiteralExprEncodingString(E->getEncoding()),
-                   "encoding", LiteralValueColor);
+    dump.printFlag(E->getEncoding(), "encoding", LiteralValueColor);
 
     dump.printDeclRef(E->getBuiltinInitializer(), "builtin_initializer");
     dump.printDeclRef(E->getInitializer(), "initializer");
@@ -1937,9 +1992,10 @@ public:
     
     dump.print(E->getTrailingQuoteLoc(), "trailing_quote_loc", LocationColor);
 
-    dump.print(E->getLiteralCapacity(), "literal_capacity", LiteralValueColor);
-    dump.print(E->getInterpolationCount(), "interpolation_count",
-               LiteralValueColor);
+    dump.printFlag(E->getLiteralCapacity(), "literal_capacity",
+                   LiteralValueColor);
+    dump.printFlag(E->getInterpolationCount(), "interpolation_count",
+                   LiteralValueColor);
 
     dump.printDeclRef(E->getBuilderInit(), "builder_init");
     dump.printDeclRef(E->getInitializer(), "result_init");
@@ -1949,12 +2005,9 @@ public:
   void visitMagicIdentifierLiteralExpr(MagicIdentifierLiteralExpr *E, StringRef Label) {
     auto dump = printCommon(E, "magic_identifier_literal_expr", Label);
 
-    dump.printFlag(MagicIdentifierLiteralExpr::getKindString(E->getKind()),
-                   "kind");
-
+    dump.printFlag(E->getKind(), "kind", LiteralValueColor);
     if (E->isString())
-      dump.printFlag(getStringLiteralExprEncodingString(E->getStringEncoding()),
-                     "encoding", LiteralValueColor);
+      dump.printFlag(E->getStringEncoding(), "encoding", LiteralValueColor);
 
     dump.printDeclRef(E->getBuiltinInitializer(), "builtin_initializer");
     dump.printDeclRef(E->getInitializer(), "initializer");
@@ -1978,8 +2031,8 @@ public:
     auto dump = printCommon(E, "declref_expr", Label);
 
     dump.printDeclRef(E->getDeclRef(), "decl");
-    dump.printNodeAccessSemantics(E->getAccessSemantics());
-    dump.printNodeFunctionRefKind(E->getFunctionRefKind());
+    dump.printFlag(E->getAccessSemantics());
+    dump.printFlag(E->getFunctionRefKind(), "function_ref", ExprModifierColor);
   }
 
   void visitSuperRefExpr(SuperRefExpr *E, StringRef Label) {
@@ -2001,8 +2054,8 @@ public:
     auto dump = printCommon(E, "overloaded_decl_ref_expr", Label);
 
     dump.printNodeName(E->getDecls()[0]->getBaseName());
-    dump.print(E->getDecls().size(), "number_of_decls", ExprModifierColor);
-    dump.printNodeFunctionRefKind(E->getFunctionRefKind());
+    dump.printFlag(E->getDecls().size(), "number_of_decls", ExprModifierColor);
+    dump.printFlag(E->getFunctionRefKind(), "function_ref", ExprModifierColor);
 
     for (auto D : E->getDecls()) {
       auto childDump = dump.child("candidate", "", DeclModifierColor);
@@ -2014,7 +2067,7 @@ public:
     auto dump = printCommon(E, "unresolved_decl_ref_expr", Label);
 
     dump.printNodeName(E->getName());
-    dump.printNodeFunctionRefKind(E->getFunctionRefKind());
+    dump.printFlag(E->getFunctionRefKind(), "function_ref", ExprModifierColor);
   }
 
   void visitUnresolvedSpecializeExpr(UnresolvedSpecializeExpr *E, StringRef Label) {
@@ -2030,7 +2083,7 @@ public:
     auto dump = printCommon(E, "member_ref_expr", Label);
 
     dump.printDeclRef(E->getMember(), "decl");
-    dump.printNodeAccessSemantics(E->getAccessSemantics());
+    dump.printFlag(E->getAccessSemantics());
     dump.printFlag(E->isSuper(), "super");
 
     dump.printRec(E->getBase());
@@ -2047,7 +2100,7 @@ public:
     auto dump = printCommon(E, "unresolved_member_expr", Label);
 
     dump.printNodeName(E->getName());
-    dump.printNodeFunctionRefKind(E->getFunctionRefKind());
+    dump.printFlag(E->getFunctionRefKind(), "function_ref", ExprModifierColor);
   }
 
   void visitDotSelfExpr(DotSelfExpr *E, StringRef Label) {
@@ -2077,14 +2130,8 @@ public:
 
     dump.printFlag(E->hasTrailingClosure(), "trailing-closure");
 
-    if (E->hasElementNames()) {
-      dump.printLabel("names", IdentifierColor);
-      interleave(E->getElementNames(),
-                 [&](Identifier name) {
-                   dump.colored(IdentifierColor) << QuotedString(name.str());
-                 },
-                 [&] { dump.colored(IdentifierColor) << ","; });
-    }
+    if (E->hasElementNames())
+      dump.printMany(E->getElementNames(), "names", IdentifierColor);
 
     for (unsigned i = 0, e = E->getNumElements(); i != e; ++i) {
       if (E->getElement(i))
@@ -2115,7 +2162,7 @@ public:
   void visitSubscriptExpr(SubscriptExpr *E, StringRef Label) {
     auto dump = printCommon(E, "subscript_expr", Label);
 
-    dump.printNodeAccessSemantics(E->getAccessSemantics());
+    dump.printFlag(E->getAccessSemantics());
     dump.printFlag(E->isSuper(), "super");
     if (E->hasDecl())
       dump.printDeclRef(E->getDecl(), "decl");
@@ -2146,7 +2193,7 @@ public:
     auto dump = printCommon(E, "unresolved_dot_expr", Label);
 
     dump.printNodeName(E->getName());
-    dump.printNodeFunctionRefKind(E->getFunctionRefKind());
+    dump.printFlag(E->getFunctionRefKind(), "function_ref", ExprModifierColor);
 
     if (E->getBase())
       dump.printRec(E->getBase(), "base");
@@ -2155,7 +2202,7 @@ public:
   void visitTupleElementExpr(TupleElementExpr *E, StringRef Label) {
     auto dump = printCommon(E, "tuple_element_expr", Label);
 
-    dump.print(E->getFieldNumber(), "index", IdentifierColor);
+    dump.printFlag(E->getFieldNumber(), "index", IdentifierColor);
 
     dump.printRec(E->getBase(), "base");
   }
@@ -2392,7 +2439,7 @@ public:
   printClosure(AbstractClosureExpr *E, char const *name, StringRef Label) {
     auto dump = printCommon(E, name, Label);
 
-    dump.print(E->getDiscriminator(), "discriminator", DiscriminatorColor);
+    dump.printFlag(E->getDiscriminator(), "discriminator", DiscriminatorColor);
 
     switch (auto isolation = E->getActorIsolation()) {
     case ClosureActorIsolation::Independent:
@@ -2478,7 +2525,7 @@ public:
     auto dump = printCommon(E, "default_argument_expr", Label);
 
     dump.printDeclRef(E->getDefaultArgsOwner(), "default_args_owner");
-    dump.print(E->getParamIndex(), "param_index");
+    dump.printFlag(E->getParamIndex(), "param_index");
   }
 
   void printApplyExpr(ApplyExpr *E, const char *NodeName, StringRef Label) {
@@ -2523,7 +2570,7 @@ public:
     auto dump = printCommon(E, name, Label);
 
     if (auto checkedCast = dyn_cast<CheckedCastExpr>(E))
-      dump.printFlag(getCheckedCastKindName(checkedCast->getCastKind()));
+      dump.printFlag(checkedCast->getCastKind());
 
     if (canGetTypeOfTypeRepr())
       dump.printTypeRepr(E->getCastTypeRepr(), "written_type");
@@ -2591,7 +2638,7 @@ public:
 
   void visitBindOptionalExpr(BindOptionalExpr *E, StringRef Label) {
     auto dump = printCommon(E, "bind_optional_expr", Label);
-    dump.print(E->getDepth(), "depth");
+    dump.printFlag(E->getDepth(), "depth");
 
     dump.printRec(E->getSubExpr());
   }
@@ -2649,7 +2696,7 @@ public:
 
   void visitObjCSelectorExpr(ObjCSelectorExpr *E, StringRef Label) {
     auto dump = printCommon(E, "objc_selector_expr", Label);
-    dump.printFlag(getObjCSelectorExprKindString(E->getSelectorKind()), "kind");
+    dump.printFlag(E->getSelectorKind(), "kind");
     dump.printDeclRef(E->getMethod(), "decl");
 
     dump.printRec(E->getSubExpr());
@@ -2709,8 +2756,8 @@ public:
 
         case KeyPathExpr::Component::Kind::TupleElement:
           grandchildDump = childDump.child("", "tuple_element", ASTNodeColor);
-          grandchildDump->print(component.getTupleIndex(), "index",
-                                DiscriminatorColor);
+          grandchildDump->printFlag(component.getTupleIndex(), "index",
+                                    DiscriminatorColor);
           break;
 
         case KeyPathExpr::Component::Kind::DictionaryKey:
@@ -3288,14 +3335,14 @@ namespace {
     void visitBuiltinIntegerType(BuiltinIntegerType *T, StringRef label) {
       auto dump = printCommon("builtin_integer_type", label);
       if (T->isFixedWidth())
-        dump.print(T->getFixedWidth(), "bit_width");
+        dump.printFlag(T->getFixedWidth(), "bit_width");
       else
         dump.printFlag("word_sized");
     }
 
     void visitBuiltinFloatType(BuiltinFloatType *T, StringRef label) {
       auto dump = printCommon("builtin_float_type", label);
-      dump.print(T->getBitWidth(), "bit_width");
+      dump.printFlag(T->getBitWidth(), "bit_width");
     }
 
     TRIVIAL_TYPE_PRINTER(BuiltinIntegerLiteral, builtin_integer_literal)
@@ -3311,7 +3358,7 @@ namespace {
 
     void visitBuiltinVectorType(BuiltinVectorType *T, StringRef label) {
       auto dump = printCommon("builtin_vector_type", label);
-      dump.print(T->getNumElements(), "num_elements");
+      dump.printFlag(T->getNumElements(), "num_elements");
       dump.printRec(T->getElementType());
     }
 
@@ -3338,7 +3385,7 @@ namespace {
 
     void visitTupleType(TupleType *T, StringRef label) {
       auto dump = printCommon("tuple_type", label);
-      dump.print(T->getNumElements(), "num_elements");
+      dump.printFlag(T->getNumElements(), "num_elements");
       
       for (const auto &elt : T->getElements()) {
         auto childDump = dump.child("", "tuple_type_elt", TypeFieldColor);
@@ -3387,7 +3434,7 @@ namespace {
     void visitMetatypeType(MetatypeType *T, StringRef label) {
       auto dump = printCommon("metatype_type", label);
       if (T->hasRepresentation())
-        dump.printFlag(getMetatypeRepresentationString(T->getRepresentation()));
+        dump.printFlag(T->getRepresentation());
       dump.printRec(T->getInstanceType());
     }
 
@@ -3395,7 +3442,7 @@ namespace {
                                       StringRef label) {
       auto dump = printCommon("existential_metatype_type", label);
       if (T->hasRepresentation())
-        dump.printFlag(getMetatypeRepresentationString(T->getRepresentation()));
+        dump.printFlag(T->getRepresentation());
       dump.printRec(T->getInstanceType());
     }
 
@@ -3473,8 +3520,8 @@ namespace {
 
     void visitGenericTypeParamType(GenericTypeParamType *T, StringRef label) {
       auto dump = printCommon("generic_type_param_type", label);
-      dump.print(T->getDepth(), "depth");
-      dump.print(T->getIndex(), "index");
+      dump.printFlag(T->getDepth(), "depth");
+      dump.printFlag(T->getIndex(), "index");
       if (auto decl = T->getDecl())
         dump.printDeclRef(decl, "decl");
     }
@@ -3492,7 +3539,7 @@ namespace {
     void printAnyFunctionParams(ArrayRef<AnyFunctionType::Param> params,
                                 StringRef label) {
       auto dump = printCommon("function_params", label);
-      dump.print(params.size(), "num_params");
+      dump.printFlag(params.size(), "num_params");
 
       for (const auto &param : params) {
         auto childDump = dump.child("", "param", TypeFieldColor);
@@ -3526,9 +3573,7 @@ namespace {
 
       SILFunctionType::Representation representation =
         T->getExtInfo().getSILRepresentation();
-      if (representation != SILFunctionType::Representation::Thick)
-        dump.printFlag(getSILFunctionTypeRepresentationString(representation),
-                       "representation");
+      dump.printFlag(representation, "representation");
 
       dump.printFlag(!T->isNoEscape(), "escaping");
       dump.printFlag(T->isSendable(), "Sendable");
@@ -3654,7 +3699,7 @@ namespace {
 
     void visitTypeVariableType(TypeVariableType *T, StringRef label) {
       auto dump = printCommon("type_variable_type", label);
-      dump.print(T->getID(), "id");
+      dump.printFlag(T->getID(), "id");
     }
 
 #undef TRIVIAL_TYPE_PRINTER
@@ -3756,31 +3801,31 @@ void StableSerializationPath::dump(llvm::raw_ostream &os) const {
 }
 
 void ASTNodeDumper::printRec(Decl *D, StringRef Label) {
-  os() << '\n';
+  dumper().newLine();
   PrintDecl(*Dumper).visit(D, Label);
 }
 void ASTNodeDumper::printRec(Expr *E, StringRef Label) {
-  os() << '\n';
+  dumper().newLine();
   PrintExpr(*Dumper).visit(E, Label);
 }
 void ASTNodeDumper::printRec(Stmt *S, StringRef Label) {
-  os() << '\n';
+  dumper().newLine();
   PrintStmt(*Dumper).visit(S, Label);
 }
 void ASTNodeDumper::printRec(TypeRepr *T, StringRef Label) {
-  os() << '\n';
+  dumper().newLine();
   PrintTypeRepr(*Dumper).visit(T, Label);
 }
 void ASTNodeDumper::printRec(const Pattern *P, StringRef Label) {
-  os() << '\n';
+  dumper().newLine();
   PrintPattern(*Dumper).visit(const_cast<Pattern *>(P), Label);
 }
 void ASTNodeDumper::printRec(Type Ty, StringRef Label) {
-  os() << '\n';
+  dumper().newLine();
   PrintType(*Dumper).visit(Ty, Label);
 }
 void ASTNodeDumper::printRec(ParameterList *PL, StringRef Label) {
-  os() << '\n';
+  dumper().newLine();
   PrintDecl(*Dumper).printParameterList(PL, Label);
 }
 void ASTNodeDumper::printRec(GenericSignature sig, StringRef Label) {
@@ -3792,13 +3837,13 @@ void ASTNodeDumper::printRec(GenericSignature sig, StringRef Label) {
 void ASTNodeDumper::
 printRecCycleBreaking(ProtocolConformanceRef conf, StringRef Label,
                       VisitedConformances &visited) {
-  os() << '\n';
+  dumper().newLine();
   dumpProtocolConformanceRefRec(*Dumper, conf, Label, visited);
 }
 void ASTNodeDumper::
 printRecCycleBreaking(SubstitutionMap map, StringRef label,
                       VisitedConformances &visited) {
-  os() << '\n';
+  dumper().newLine();
   dumpSubstitutionMapRec(*Dumper, map, label, SubstitutionMap::DumpStyle::Full,
                          visited);
 }
