@@ -910,6 +910,7 @@ void ModuleDecl::getDisplayDecls(SmallVectorImpl<Decl*> &Results) const {
   // FIXME: Should this do extra access control filtering?
   FORWARD(getDisplayDecls, (Results));
 
+#if !SWIFT_BUILD_ONLY_SYNTAXPARSERLIB
   // Force Sendable on all types, which might synthesize some extensions.
   // FIXME: We can remove this if @_nonSendable stops creating extensions.
   for (auto result : Results) {
@@ -931,6 +932,7 @@ void ModuleDecl::getDisplayDecls(SmallVectorImpl<Decl*> &Results) const {
     return llvm::is_contained(oldResults, result);
   });
   Results.erase(uniqueEnd, Results.end());
+#endif
 }
 
 ProtocolConformanceRef
