@@ -5,6 +5,8 @@
 
 // RUN: %target-swift-frontend -target arm64-apple-ios13.0  -parse-as-library %s -typecheck -library-level=api
 
+// REQUIRES: rdar91325474
+
 @_spi_available(macOS 10.10, *)
 @available(iOS 8.0, *)
 public class SPIClass {}

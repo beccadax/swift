@@ -11,6 +11,8 @@
 
 // RUN: %target-swift-frontend -target arm64-apple-ios13.0 -parse-as-library %s -typecheck -library-level=api -I %t/ios
 
+// REQUIRES: rdar91325474
+
 #if Foo
 
 @_spi_available(macOS 10.10, *)
