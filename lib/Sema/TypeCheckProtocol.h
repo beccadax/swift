@@ -1283,7 +1283,9 @@ llvm::TinyPtrVector<ValueDecl *> findWitnessedObjCRequirements(
 void diagnoseConformanceFailure(Type T,
                                 ProtocolDecl *Proto,
                                 DeclContext *DC,
-                                SourceLoc ComplainLoc);
+                                SourceLoc ComplainLoc,
+                                DiagnosticBehavior limit =
+                                    DiagnosticBehavior::Unspecified);
 
 }
 

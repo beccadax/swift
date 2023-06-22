@@ -410,9 +410,10 @@ extension CoffeeDelegate  {
 }
 
 // rdar://99758612 -- sendable requirement on ObjC protocols
+// These should be warnings because, like all imported decls, SendableProtocol is implicitly @preconcurrency.
 
 class NonSendableClassConformingToSendableProtocol: NSObject, SendableProtocol {
-  // expected-error@-1 {{type 'NonSendableClassConformingToSendableProtocol' does not conform to protocol 'Sendable'}}
+  // expected-warning@-1 {{type 'NonSendableClassConformingToSendableProtocol' does not conform to protocol 'Sendable'}}
 }
 
 class SendableClassConformingToSendableProtocol: NSObject, SendableProtocol, @unchecked Sendable {
@@ -420,7 +421,7 @@ class SendableClassConformingToSendableProtocol: NSObject, SendableProtocol, @un
 }
 
 class NonSendableClassConformingToSendableProtocolRefined: NSObject, SendableProtocolRefined {
-  // expected-error@-1 {{type 'NonSendableClassConformingToSendableProtocolRefined' does not conform to protocol 'Sendable'}}
+  // expected-warning@-1 {{type 'NonSendableClassConformingToSendableProtocolRefined' does not conform to protocol 'Sendable'}}
 }
 
 class SendableClassConformingToSendableProtocolRefined: NSObject, SendableProtocolRefined, @unchecked Sendable {

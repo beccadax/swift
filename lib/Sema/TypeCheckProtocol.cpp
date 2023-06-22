@@ -2272,7 +2272,13 @@ checkIndividualConformance(NormalProtocolConformance *conformance,
       DC->getParentModule()->lookupConformance(T, InheritedProto);
     if (InheritedConformance.isInvalid() ||
         !InheritedConformance.isConcrete()) {
-      diagnoseConformanceFailure(T, InheritedProto, DC, ComplainLoc);
+      DiagnosticBehavior limit = DiagnosticBehavior::Unspecified;
+      if (InheritedProto->isSpecificProtocol(KnownProtocolKind::Sendable)
+          && Proto->preconcurrency()
+          && !DC->getASTContext().LangOpts.isSwiftVersionAtLeast(6)) {
+        limit = DiagnosticBehavior::Warning;
+      }
+      diagnoseConformanceFailure(T, InheritedProto, DC, ComplainLoc, limit);
 
       // Recursive call already diagnosed this problem, but tack on a note
       // to establish the relationship.
@@ -5501,10 +5507,32 @@ ConformanceChecker::getObjCRequirements(ObjCMethodKey key) {
   return known->second;
 }
 
+/// Determine whether this conformance is implied by another conformance
+/// to a protocol that predated concurrency.
+static ProtocolDecl *isImpliedByConformancePredatingConcurrency(
+    NormalProtocolConformance *conformance) {
+  if (conformance->getSourceKind() != ConformanceEntryKind::Implied)
+    return nullptr;
+
+  auto implied = conformance->getImplyingConformance();
+  if (!implied)
+    return nullptr;
+
+  auto impliedProto = implied->getProtocol();
+  if (impliedProto->preconcurrency() ||
+      impliedProto->isSpecificProtocol(KnownProtocolKind::Error) ||
+      impliedProto->isSpecificProtocol(KnownProtocolKind::CodingKey))
+    return impliedProto;
+
+  // Recurse to look further.
+  return isImpliedByConformancePredatingConcurrency(implied);
+}
+
 void swift::diagnoseConformanceFailure(Type T,
                                        ProtocolDecl *Proto,
                                        DeclContext *DC,
-                                       SourceLoc ComplainLoc) {
+                                       SourceLoc ComplainLoc,
+                                       DiagnosticBehavior limit) {
   if (T->hasError())
     return;
 
@@ -5637,7 +5665,8 @@ void swift::diagnoseConformanceFailure(Type T,
   }
 
   diags.diagnose(ComplainLoc, diag::type_does_not_conform,
-                 T, Proto->getDeclaredInterfaceType());
+                 T, Proto->getDeclaredInterfaceType())
+      .limitBehavior(limit);
 }
 
 void ConformanceChecker::diagnoseOrDefer(
@@ -6401,27 +6430,6 @@ diagnoseMissingAppendInterpolationMethod(NominalTypeDecl *typeDecl) {
                          typeDecl->getName(), typeDecl->getFormalAccess());
     }
   }
-}
-
-/// Determine whether this conformance is implied by another conformance
-/// to a protocol that predated concurrency.
-static bool isImpliedByConformancePredatingConcurrency(
-    NormalProtocolConformance *conformance) {
-  if (conformance->getSourceKind() != ConformanceEntryKind::Implied)
-    return false;
-
-  auto implied = conformance->getImplyingConformance();
-  if (!implied)
-    return false;
-
-  auto impliedProto = implied->getProtocol();
-  if (impliedProto->preconcurrency() ||
-      impliedProto->isSpecificProtocol(KnownProtocolKind::Error) ||
-      impliedProto->isSpecificProtocol(KnownProtocolKind::CodingKey))
-    return true;
-
-  // Recurse to look further.
-  return isImpliedByConformancePredatingConcurrency(implied);
 }
 
 void TypeChecker::checkConformancesInContext(IterableDeclContext *idc) {

@@ -9,3 +9,8 @@ public protocol NonStrictProtocol {
   func send(_ body: @Sendable () -> Void)
   func dontSend(_ body: () -> Void)
 }
+
+public protocol NonStrictSendableProtocol: Sendable {}
+
+@preconcurrency
+public protocol NonStrictPreconcurrencySendableProtocol: Sendable {}

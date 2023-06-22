@@ -60,3 +60,35 @@ struct NonStrictConformer: NonStrictProtocol {
   func send(_ body: () -> Void) {}
   func dontSend(_ body: @Sendable () -> Void) {} // no-warning
 }
+
+class WrongStrictSendableConformer: StrictSendableProtocol {
+  // expected-warning@-1 {{cannot conform to 'Sendable'}}
+}
+
+class RightStrictSendableConformer: StrictSendableProtocol, @unchecked Sendable {
+  // no-error
+}
+
+class WrongStrictPreconcurrencySendableConformer: StrictPreconcurrencySendableProtocol {
+  // expected-warning@-1 {{cannot conform to 'Sendable'}}
+}
+
+class RightStrictPreconcurrencySendableConformer: StrictPreconcurrencySendableProtocol, @unchecked Sendable {
+  // no-error
+}
+
+class WrongNonStrictSendableConformer: NonStrictSendableProtocol {
+  // expected-warning@-1 {{cannot conform to 'Sendable'}}
+}
+
+class RightNonStrictSendableConformer: NonStrictSendableProtocol, @unchecked Sendable {
+  // no-error
+}
+
+class WrongNonStrictPreconcurrencySendableConformer: NonStrictPreconcurrencySendableProtocol {
+  // expected-warning@-1 {{cannot conform to 'Sendable'}}
+}
+
+class RightNonStrictPreconcurrencySendableConformer: NonStrictPreconcurrencySendableProtocol, @unchecked Sendable {
+  // no-error
+}
