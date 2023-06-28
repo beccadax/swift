@@ -1481,7 +1481,6 @@ visitObjCImplementationAttr(ObjCImplementationAttr *attr) {
   if (!CD) {
     diagnoseAndRemoveAttr(attr,
                           diag::attr_objc_implementation_must_extend_class,
-                          ED->getExtendedNominal()->getDescriptiveKind(),
                           ED->getExtendedNominal());
     ED->getExtendedNominal()->diagnose(diag::decl_declared_here,
                                        ED->getExtendedNominal()->getName());
@@ -1490,7 +1489,7 @@ visitObjCImplementationAttr(ObjCImplementationAttr *attr) {
 
   if (!CD->hasClangNode()) {
     diagnoseAndRemoveAttr(attr, diag::attr_objc_implementation_must_be_imported,
-                          CD->getDescriptiveKind(), CD);
+                          CD);
     CD->diagnose(diag::decl_declared_here, CD->getName());
     return;
   }

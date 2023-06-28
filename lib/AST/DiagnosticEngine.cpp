@@ -658,11 +658,24 @@ static void formatDiagnosticArgument(StringRef Modifier,
         << FormatOpts.ClosingQuotationMark;
     break;
 
-  case DiagnosticArgumentKind::ValueDecl:
+  case DiagnosticArgumentKind::ValueDecl: {
+    auto VD = Arg.getAsValueDecl();
+
+    if (auto accessor = dyn_cast<AccessorDecl>(VD)) {
+      Out << Decl::getDescriptiveKindName(VD->getDescriptiveKind()) << " for ";
+      VD = accessor->getStorage();
+    }
+
+    if (Modifier == "kind")
+      Out << Decl::getDescriptiveKindName(VD->getDescriptiveKind()) << " ";
+    else
+      assert(Modifier.empty() && "Improper modifier for ValueDecl argument");
+
     Out << FormatOpts.OpeningQuotationMark;
-    Arg.getAsValueDecl()->getName().printPretty(Out);
+    VD->getName().printPretty(Out);
     Out << FormatOpts.ClosingQuotationMark;
     break;
+  }
 
   case DiagnosticArgumentKind::FullyQualifiedType:
   case DiagnosticArgumentKind::Type: {

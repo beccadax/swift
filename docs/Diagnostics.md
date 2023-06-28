@@ -128,13 +128,17 @@ If you run into any issues or have questions while following the steps above, fe
 
 - `%0`, `%1`, etc - Formats the specified diagnostic argument based on its type.
 
-- `%select{a|b|c}0` - Chooses from a list of alternatives, separated by vertical bars, based on the value of the given argument. In this example, a value of 2 in diagnostic argument 0 would result in "c" being output. The argument to the %select may be an integer, enum, or StringRef. If it's a StringRef, the specifier acts as an emptiness check.
+- `%kind0` - For a `ValueDecl *` parameter, prefixes the declaration's name with its descriptive decl kind (e.g. `class 'Foo'` instead of just `'Foo'`).
+
+- `%select{a|b|c}0` - Chooses from a list of alternatives, separated by vertical bars, based on the value of the given argument. In this example, a value of 2 in diagnostic argument 0 would result in "c" being output. The argument to the %select may be an integer, enum, StringRef, or Identifier. If it's a StringRef or Identifier, the specifier acts as an emptiness check.
 
 - `%s0` - Produces an "s" if the given argument is anything other than 1, as meant for an English plural. This isn't particularly localizable without a more general `%plural` form, but most diagnostics try to avoid cases where a plural/singular distinction would be necessary in the first place.
 
 - `%error` - Represents a branch in a `%select` that should never be taken. In debug builds of the compiler this produces an assertion failure.
 
 - `%%` - Emits a literal percent sign.
+
+If your diagnostic could apply to accessors, be careful how you format the declaration's name; accessors have an empty name, so you need to display their accessor kind and the name of their storage decl instead. Inserting the name with a `ValueDecl *` parameter will handle these complications automatically; if you want to use `DeclName` or `Identifier` instead, you'll probably need a separate version of the diagnostic for accessors. 
 
 ### Diagnostic Verifier ###
 
