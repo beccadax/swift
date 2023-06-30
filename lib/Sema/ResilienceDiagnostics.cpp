@@ -104,19 +104,10 @@ bool TypeChecker::diagnoseInlinableDeclRefAccess(SourceLoc loc,
       downgradeToWarning = DowngradeToWarning::Yes;
   }
 
-  auto diagName = D->getName();
-  bool isAccessor = false;
-
   // Swift 4.2 did not check accessor accessibility.
   if (auto accessor = dyn_cast<AccessorDecl>(D)) {
-    isAccessor = true;
-
     if (!Context.isSwiftVersionAtLeast(5))
       downgradeToWarning = DowngradeToWarning::Yes;
-
-    // For accessors, diagnose with the name of the storage instead of the
-    // implicit '_'.
-    diagName = accessor->getStorage()->getName();
   }
 
   // Swift 5.0 did not check the underlying types of local typealiases.
@@ -130,23 +121,22 @@ bool TypeChecker::diagnoseInlinableDeclRefAccess(SourceLoc loc,
   auto diagAccessLevel = std::min(declAccessScope.accessLevelForDiagnostics(),
                                   importAccessLevel);
 
-  Context.Diags.diagnose(loc, diagID, D->getDescriptiveKind(), diagName,
-                         diagAccessLevel,
-                         fragileKind.getSelector(), isAccessor);
+  Context.Diags.diagnose(loc, diagID, D, diagAccessLevel,
+                         fragileKind.getSelector());
 
   if (fragileKind.allowUsableFromInline) {
     Context.Diags.diagnose(D, diag::resilience_decl_declared_here,
-                           D->getDescriptiveKind(), diagName, isAccessor);
+                           D);
   } else {
     Context.Diags.diagnose(D, diag::resilience_decl_declared_here_public,
-                           D->getDescriptiveKind(), diagName, isAccessor);
+                           D);
   }
 
   if (problematicImport.has_value() &&
       diagAccessLevel == importAccessLevel) {
     Context.Diags.diagnose(problematicImport->accessLevelLoc,
                            diag::decl_import_via_here,
-                           D->getDescriptiveKind(), diagName,
+                           D,
                            problematicImport->accessLevel,
                            problematicImport->module.importedModule->getName());
   }
