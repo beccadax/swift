@@ -1217,7 +1217,7 @@ void AttributeChecker::visitSPIAccessControlAttr(SPIAccessControlAttr *attr) {
         if (ED->getAttrs().hasAttribute<FrozenAttr>(/*allowInvalid*/ true) &&
             !ED->isSPI()) {
           diagnoseAndRemoveAttr(attr, diag::spi_attribute_on_frozen_enum_case,
-                                VD->getDescriptiveKind(), VD->getName());
+                                VD);
         }
       }
     }
@@ -1882,7 +1882,7 @@ void AttributeChecker::visitAvailableAttr(AvailableAttr *attr) {
       if (const ValueDecl *vd = dyn_cast<ValueDecl>(D)) {
         D->getASTContext().Diags.diagnose(
             D->getLoc(), diag::async_named_decl_must_be_available_from_async,
-            D->getDescriptiveKind(), vd->getName());
+            vd);
       } else {
         D->getASTContext().Diags.diagnose(
             D->getLoc(), diag::async_decl_must_be_available_from_async,
@@ -2908,7 +2908,7 @@ void AttributeChecker::visitUsableFromInlineAttr(UsableFromInlineAttr *attr) {
   if (VD->getAttrs().hasAttribute<InlinableAttr>()) {
     if (Ctx.isSwiftVersionAtLeast(4,2))
       diagnoseAndRemoveAttr(attr, diag::inlinable_implies_usable_from_inline,
-                            VD->getDescriptiveKind(), VD->getName());
+                            VD);
     return;
   }
 }
@@ -3945,8 +3945,7 @@ void AttributeChecker::visitCustomAttr(CustomAttr *attr) {
     return;
   }
 
-  diagnose(attr->getLocation(), diag::nominal_type_not_attribute,
-           nominal->getDescriptiveKind(), nominal->getName());
+  diagnose(attr->getLocation(), diag::nominal_type_not_attribute, nominal);
   nominal->diagnose(diag::decl_declared_here, nominal->getName());
   attr->setInvalid();
 }
@@ -6672,7 +6671,7 @@ void AttributeChecker::visitSendableAttr(SendableAttr *attr) {
     if (isolation.isActorIsolated()) {
       diagnoseAndRemoveAttr(
           attr, diag::sendable_isolated_sync_function,
-          isolation, value->getDescriptiveKind(), value->getName())
+          isolation, value)
         .warnUntilSwiftVersion(6);
     }
   }
@@ -6889,7 +6888,7 @@ void AttributeChecker::visitUnavailableFromAsyncAttr(
       if (ValueDecl *vd = dyn_cast<ValueDecl>(D)) {
         D->getASTContext().Diags.diagnose(
             D->getLoc(), diag::async_named_decl_must_be_available_from_async,
-            D->getDescriptiveKind(), vd->getName());
+            vd);
       } else {
         D->getASTContext().Diags.diagnose(
             D->getLoc(), diag::async_decl_must_be_available_from_async,
@@ -7069,8 +7068,7 @@ void AttributeChecker::visitRuntimeMetadataAttr(RuntimeMetadataAttr *attr) {
         case UnviabilityReason::Inaccessible:
           diagnose(init,
                    diag::runtime_attribute_type_requirement_not_accessible,
-                   init->getFormalAccess(), init->getDescriptiveKind(),
-                   init->getName(), nominal->getDeclaredType(),
+                   init->getFormalAccess(), init, nominal->getDeclaredType(),
                    nominal->getFormalAccess());
           break;
         }
