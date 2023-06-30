@@ -659,6 +659,10 @@ static void formatDiagnosticArgument(StringRef Modifier,
     break;
 
   case DiagnosticArgumentKind::ValueDecl: {
+    assert((Modifier.empty() || Modifier == "kind" || Modifier == "base" ||
+            Modifier == "kindbase")
+              && "Improper modifier for ValueDecl argument");
+
     auto VD = Arg.getAsValueDecl();
 
     if (auto accessor = dyn_cast<AccessorDecl>(VD)) {
@@ -666,13 +670,16 @@ static void formatDiagnosticArgument(StringRef Modifier,
       VD = accessor->getStorage();
     }
 
-    if (Modifier == "kind")
+    if (Modifier == "kind" || Modifier == "kindbase")
       Out << Decl::getDescriptiveKindName(VD->getDescriptiveKind()) << " ";
-    else
-      assert(Modifier.empty() && "Improper modifier for ValueDecl argument");
+
+    DeclName name = VD->getName();
+
+    if (Modifier == "base" || Modifier == "kindbase")
+      name = name.getBaseName();
 
     Out << FormatOpts.OpeningQuotationMark;
-    VD->getName().printPretty(Out);
+    name.printPretty(Out);
     Out << FormatOpts.ClosingQuotationMark;
     break;
   }
