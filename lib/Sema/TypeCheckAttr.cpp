@@ -1483,14 +1483,14 @@ visitObjCImplementationAttr(ObjCImplementationAttr *attr) {
                           diag::attr_objc_implementation_must_extend_class,
                           ED->getExtendedNominal());
     ED->getExtendedNominal()->diagnose(diag::decl_declared_here,
-                                       ED->getExtendedNominal()->getName());
+                                       ED->getExtendedNominal());
     return;
   }
 
   if (!CD->hasClangNode()) {
     diagnoseAndRemoveAttr(attr, diag::attr_objc_implementation_must_be_imported,
                           CD);
-    CD->diagnose(diag::decl_declared_here, CD->getName());
+    CD->diagnose(diag::decl_declared_here, CD);
     return;
   }
 
@@ -3946,7 +3946,7 @@ void AttributeChecker::visitCustomAttr(CustomAttr *attr) {
   }
 
   diagnose(attr->getLocation(), diag::nominal_type_not_attribute, nominal);
-  nominal->diagnose(diag::decl_declared_here, nominal->getName());
+  nominal->diagnose(diag::decl_declared_here, nominal);
   attr->setInvalid();
 }
 
@@ -5952,8 +5952,7 @@ static bool typeCheckDerivativeAttr(DerivativeAttr *attr) {
       diags.diagnose(originalName.Loc,
                      diag::derivative_attr_original_stored_property_unsupported,
                      originalName.Name);
-      diags.diagnose(originalAFD->getLoc(), diag::decl_declared_here,
-                     asd->getName());
+      diags.diagnose(originalAFD->getLoc(), diag::decl_declared_here, asd);
       return true;
     }
     // Diagnose original class property and subscript setters.
@@ -5962,8 +5961,7 @@ static bool typeCheckDerivativeAttr(DerivativeAttr *attr) {
         accessorDecl->getAccessorKind() == AccessorKind::Set) {
       diags.diagnose(originalName.Loc,
                      diag::derivative_attr_class_setter_unsupported);
-      diags.diagnose(originalAFD->getLoc(), diag::decl_declared_here,
-                     asd->getName());
+      diags.diagnose(originalAFD->getLoc(), diag::decl_declared_here, asd);
       return true;
     }
   }
@@ -6844,8 +6842,7 @@ void AttributeChecker::visitMarkerAttr(MarkerAttr *attr) {
       proto->diagnose(
           diag::marker_protocol_inherit_nonmarker,
           proto->getName(), inheritedProto->getName());
-      inheritedProto->diagnose(
-          diag::decl_declared_here, inheritedProto->getName());
+      inheritedProto->diagnose( diag::decl_declared_here, inheritedProto);
     }
   }
 
@@ -7611,7 +7608,7 @@ ArrayRef<VarDecl *> InitAccessorReferencedVariablesRequest::evaluate(
                          DeclNameRef(name));
 
       for (auto *choice : propertyResults) {
-        ctx.Diags.diagnose(choice, diag::decl_declared_here, choice->getName());
+        ctx.Diags.diagnose(choice, diag::decl_declared_here, choice);
       }
 
       failed = true;

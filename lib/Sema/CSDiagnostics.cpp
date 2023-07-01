@@ -1867,8 +1867,7 @@ bool RValueTreatedAsLValueFailure::diagnoseAsError() {
           if (auto overload = getOverloadChoiceIfAvailable(
                   getConstraintLocator(member, ConstraintLocator::Member))) {
             if (auto *ref = overload->choice.getDeclOrNull())
-              emitDiagnosticAt(ref, diag::decl_declared_here,
-                               ref->getName());
+              emitDiagnosticAt(ref, diag::decl_declared_here, ref);
           }
           return true;
         }
@@ -5066,7 +5065,7 @@ bool MissingArgumentsFailure::diagnoseAsError() {
 
   if (auto selectedOverload = getCalleeOverloadChoiceIfAvailable(locator)) {
     if (auto *decl = selectedOverload->choice.getDeclOrNull()) {
-      emitDiagnosticAt(decl, diag::decl_declared_here, decl->getName());
+      emitDiagnosticAt(decl, diag::decl_declared_here, decl);
     }
   }
 
@@ -5234,7 +5233,7 @@ bool MissingArgumentsFailure::diagnoseSingleMissingArgument() const {
   if (auto selectedOverload =
           getCalleeOverloadChoiceIfAvailable(getLocator())) {
     if (auto *decl = selectedOverload->choice.getDeclOrNull()) {
-      emitDiagnosticAt(decl, diag::decl_declared_here, decl->getName());
+      emitDiagnosticAt(decl, diag::decl_declared_here, decl);
     }
   }
 
@@ -5380,7 +5379,7 @@ bool MissingArgumentsFailure::diagnoseInvalidTupleDestructuring() const {
   diagnostic.flush();
 
   // Add a note which points to the overload choice location.
-  emitDiagnosticAt(decl, diag::decl_declared_here, decl->getName());
+  emitDiagnosticAt(decl, diag::decl_declared_here, decl);
   return true;
 }
 
@@ -5870,7 +5869,7 @@ bool ExtraneousArgumentsFailure::diagnoseAsError() {
 
   if (auto overload = getCalleeOverloadChoiceIfAvailable(getLocator())) {
     if (auto *decl = overload->choice.getDeclOrNull()) {
-      emitDiagnosticAt(decl, diag::decl_declared_here, decl->getName());
+      emitDiagnosticAt(decl, diag::decl_declared_here, decl);
     }
   }
 
@@ -5999,7 +5998,7 @@ bool InaccessibleMemberFailure::diagnoseAsError() {
         .highlight(nameLoc.getSourceRange());
   }
 
-  emitDiagnosticAt(Member, diag::decl_declared_here, Member->getName());
+  emitDiagnosticAt(Member, diag::decl_declared_here, Member);
   return true;
 }
 
@@ -7457,7 +7456,7 @@ bool ArgumentMismatchFailure::diagnoseTrailingClosureMismatch() const {
 
   if (auto overload = getCalleeOverloadChoiceIfAvailable(getLocator())) {
     if (auto *decl = overload->choice.getDeclOrNull()) {
-      emitDiagnosticAt(decl, diag::decl_declared_here, decl->getName());
+      emitDiagnosticAt(decl, diag::decl_declared_here, decl);
     }
   }
 
@@ -8048,7 +8047,7 @@ bool MissingQualifierInMemberRefFailure::diagnoseAsError() {
                  choice->getDescriptiveKind(), qualifier)
       .fixItInsert(UDE->getStartLoc(), namePlusDot);
 
-  emitDiagnosticAt(choice, diag::decl_declared_here, choice->getName());
+  emitDiagnosticAt(choice, diag::decl_declared_here, choice);
   return true;
 }
 
@@ -8276,7 +8275,7 @@ bool TrailingClosureRequiresExplicitLabel::diagnoseAsError() {
   }
 
   if (auto *callee = argInfo.getCallee()) {
-    emitDiagnosticAt(callee, diag::decl_declared_here, callee->getName());
+    emitDiagnosticAt(callee, diag::decl_declared_here, callee);
   }
 
   return true;
@@ -8474,7 +8473,7 @@ bool ReferenceToInvalidDeclaration::diagnoseAsError() {
   // about reference to an invalid declaration.
 
   emitDiagnostic(diag::reference_to_invalid_decl, decl->getName());
-  emitDiagnosticAt(decl, diag::decl_declared_here, decl->getName());
+  emitDiagnosticAt(decl, diag::decl_declared_here, decl);
   return true;
 }
 
@@ -9102,7 +9101,7 @@ bool DestructureTupleToUseWithPackExpansionParameter::diagnoseAsError() {
     return true;
 
   if (auto *decl = selectedOverload->choice.getDeclOrNull()) {
-    emitDiagnosticAt(decl, diag::decl_declared_here, decl->getName());
+    emitDiagnosticAt(decl, diag::decl_declared_here, decl);
   }
 
   return true;
