@@ -432,6 +432,13 @@ protocol EmptySwiftProto {}
   func nonPointerArgument(_: CInt!) {} // expected-error {{method cannot be in an @_objcImplementation extension of a class (without final or @nonobjc) because the type of the parameter cannot be represented in Objective-C}}
 }
 
+@_objcImplementation(TypeMatchRegressionTests) extension ObjCClass {
+  var opaqueStruct: OpaqueStruct? {
+    // expected-warning@-1 {{property 'opaqueStruct' of type 'OpaqueStruct?' does not match type 'unowned(unsafe) OpaqueStruct?' declared by the header}}
+    return nil
+  }
+}
+
 @_objcImplementation extension ObjCImplSubclass {
     @objc(initFromProtocol1:)
     required public init?(fromProtocol1: CInt) {

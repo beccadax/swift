@@ -765,6 +765,8 @@ static void formatDiagnosticArgument(StringRef Modifier,
 
     // Compute the appropriate print options for this argument.
     auto printOptions = PrintOptions::forDiagnosticArguments();
+    printOptions.PrintStorageRepresentationAttrs =
+        PrintOptions::StorageRepresentationMode::SwiftModifiers;
     if (Arg.getKind() == DiagnosticArgumentKind::Type) {
       type = Arg.getAsType()->getWithoutParens();
       if (type.isNull()) {

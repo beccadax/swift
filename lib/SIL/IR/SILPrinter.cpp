@@ -4524,7 +4524,8 @@ ID SILPrintContext::getID(SILNodePointer node) {
 PrintOptions PrintOptions::printSIL(const SILPrintContext *ctx) {
   PrintOptions result;
   result.PrintLongAttrsOnSeparateLines = true;
-  result.PrintStorageRepresentationAttrs = true;
+  result.PrintStorageRepresentationAttrs =
+      StorageRepresentationMode::SILAttributes;
   result.AbstractAccessors = false;
   result.PrintForSIL = true;
   result.PrintInSILBody = true;

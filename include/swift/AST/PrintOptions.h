@@ -403,9 +403,21 @@ struct PrintOptions {
   FunctionRepresentationMode PrintFunctionRepresentationAttrs =
     FunctionRepresentationMode::NameOnly;
 
+  enum class StorageRepresentationMode : uint8_t {
+    /// Print storage representation attributes on types using surface-language
+    /// modifiers, e.g. 'weak', 'unowned(unsafe)'
+    SwiftModifiers,
+    /// Print storage representation attributes on types using SIL attributes, e.g.
+    /// '@sil_weak', '@sil_unmanaged'.
+    SILAttributes,
+    /// Do not print storage representation attributes on types.
+    None
+  };
+
   /// Whether to print storage representation attributes on types, e.g.
   /// '@sil_weak', '@sil_unmanaged'.
-  bool PrintStorageRepresentationAttrs = false;
+  StorageRepresentationMode PrintStorageRepresentationAttrs =
+    StorageRepresentationMode::None;
 
   /// Whether to print 'static' or 'class' on static decls.
   bool PrintStaticKeyword = true;
@@ -780,7 +792,8 @@ struct PrintOptions {
     PrintOptions result = printVerbose();
     result.ExcludeAttrList.clear();
     result.ExcludeAttrList.push_back(DeclAttrKind::FixedLayout);
-    result.PrintStorageRepresentationAttrs = true;
+    result.PrintStorageRepresentationAttrs =
+        StorageRepresentationMode::SILAttributes;
     result.AbstractAccessors = false;
     result.PrintAccess = true;
     result.SkipEmptyExtensionDecls = false;

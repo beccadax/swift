@@ -141,7 +141,8 @@ resolveTypeFromMangledNameList(swift::ASTContext &Ctx,
       swift::PrintOptions PO;
       PO.FullyQualifiedTypesIfAmbiguous = QualifyTypes;
       PO.QualifyImportedTypes = QualifyTypes;
-      PO.PrintStorageRepresentationAttrs = true;
+      PO.PrintStorageRepresentationAttrs =
+          swift::PrintOptions::StorageRepresentationMode::SILAttributes;
       ResolvedType->print(llvm::outs(), PO);
       llvm::outs() << "\n";
     }

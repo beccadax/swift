@@ -7300,11 +7300,24 @@ public:
     printDependentMember(T);
   }
 
+  void printRefStorageImpl(ReferenceStorageType *T, StringRef silAttr) {
+    switch (Options.PrintStorageRepresentationAttrs) {
+    case PrintOptions::StorageRepresentationMode::SwiftModifiers:
+      if (!keywordOf(T->getOwnership()).empty())
+        Printer << keywordOf(T->getOwnership()) << ' ';
+      break;
+    case PrintOptions::StorageRepresentationMode::SILAttributes:
+      Printer << silAttr;
+      break;
+    case PrintOptions::StorageRepresentationMode::None:
+      break;
+    }
+    visit(T->getReferentType());
+  }
+
 #define REF_STORAGE(Name, name, ...) \
   void visit##Name##StorageType(Name##StorageType *T) { \
-    if (Options.PrintStorageRepresentationAttrs) \
-      Printer << "@sil_" #name " "; \
-    visit(T->getReferentType()); \
+    printRefStorageImpl(T, "@sil_" #name " "); \
   }
 #include "swift/AST/ReferenceStorage.def"
 

@@ -1165,7 +1165,7 @@ void TransferNonSendableImpl::emitTransferredNonTransferrableDiagnostics() {
       break;
     case UseDiagnosticInfoKind::FunctionArgumentApply: {
       diagnoseError(astContext, loc, diag::regionbasedisolation_arg_transferred,
-                    diagnosticInfo.getType(),
+                    diagnosticInfo.getType()->getReferenceStorageReferent(),
                     diagnosticInfo.getIsolationCrossing().getCalleeIsolation())
           .highlight(op->getUser()->getLoc().getSourceRange());
       // Only emit the note if our value is different from the function
@@ -1186,7 +1186,7 @@ void TransferNonSendableImpl::emitTransferredNonTransferrableDiagnostics() {
     }
     case UseDiagnosticInfoKind::FunctionArgumentClosure: {
       diagnoseError(astContext, loc, diag::regionbasedisolation_arg_transferred,
-                    diagnosticInfo.getType(),
+                    diagnosticInfo.getType()->getReferenceStorageReferent(),
                     diagnosticInfo.getIsolationCrossing().getCalleeIsolation())
           .highlight(op->getUser()->getLoc().getSourceRange());
       // Only emit the note if our value is different from the function
@@ -1207,7 +1207,7 @@ void TransferNonSendableImpl::emitTransferredNonTransferrableDiagnostics() {
       diagnoseError(
           astContext, loc,
           diag::regionbasedisolation_arg_passed_to_strongly_transferred_param,
-          diagnosticInfo.getType())
+          diagnosticInfo.getType()->getReferenceStorageReferent())
           .highlight(op->getUser()->getLoc().getSourceRange());
       break;
     }

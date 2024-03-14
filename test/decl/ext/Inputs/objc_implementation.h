@@ -162,6 +162,15 @@
 
 @end
 
+typedef struct __attribute__((objc_bridge(id))) __OpaqueStruct *OpaqueStructRef;
+typedef OpaqueStructRef IndirectOpaqueStructRef;
+
+@interface ObjCClass (TypeMatchRegressionTests)
+
+@property (readonly,nullable,assign) OpaqueStructRef opaqueStruct;
+
+@end
+
 @interface ObjCSubclass : ObjCClass
 
 - (void)subclassMethodFromHeader1:(int)param;
