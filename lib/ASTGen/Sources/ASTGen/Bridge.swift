@@ -27,6 +27,8 @@ extension BridgedNullable {
 
 extension BridgedSourceLoc: /*@retroactive*/ swiftASTGen.BridgedNullable {}
 extension BridgedIdentifier: /*@retroactive*/ swiftASTGen.BridgedNullable {}
+extension BridgedNullableDeclAttribute: /*@retroactive*/ swiftASTGen.BridgedNullable {}
+extension BridgedNullableDecl: /*@retroactive*/ swiftASTGen.BridgedNullable {}
 extension BridgedNullableExpr: /*@retroactive*/ swiftASTGen.BridgedNullable {}
 extension BridgedNullableStmt: /*@retroactive*/ swiftASTGen.BridgedNullable {}
 extension BridgedNullableTypeRepr: /*@retroactive*/ swiftASTGen.BridgedNullable {}
@@ -38,6 +40,7 @@ extension BridgedNullablePatternBindingInitializer: /*@retroactive*/ swiftASTGen
 extension BridgedNullableArgumentList: /*@retroactive*/ swiftASTGen.BridgedNullable {}
 extension BridgedNullablePatternBindingDecl: /*@retroactive*/ swiftASTGen.BridgedNullable {}
 extension BridgedNullableVarDecl: /*@retroactive*/ swiftASTGen.BridgedNullable {}
+extension BridgedNullableABIAttr: /*@retroactive*/ swiftASTGen.BridgedNullable {}
 
 extension BridgedIdentifier: /*@retroactive*/ Swift.Equatable {
   public static func == (lhs: Self, rhs: Self) -> Bool {
@@ -71,6 +74,12 @@ extension BridgedHasNullable {
 extension BridgedStmt: BridgedHasNullable {
   typealias Nullable = BridgedNullableStmt
 }
+extension BridgedDeclAttribute: BridgedHasNullable {
+  typealias Nullable = BridgedNullableDeclAttribute
+}
+extension BridgedDecl: BridgedHasNullable {
+  typealias Nullable = BridgedNullableDecl
+}
 extension BridgedExpr: BridgedHasNullable {
   typealias Nullable = BridgedNullableExpr
 }
@@ -100,6 +109,9 @@ extension BridgedPatternBindingDecl: BridgedHasNullable {
 }
 extension BridgedVarDecl: BridgedHasNullable {
   typealias Nullable = BridgedNullableVarDecl
+}
+extension BridgedABIAttr: BridgedHasNullable {
+  typealias Nullable = BridgedNullableABIAttr
 }
 
 public extension BridgedSourceLoc {
@@ -253,6 +265,56 @@ extension BridgedSourceRange {
   }
 }
 
+extension BridgedPatternBindingDecl {
+  var patterns: [BridgedPattern] {
+    return (0 ..< patternCount).map(pattern(at:))
+  }
+}
+
+extension BridgedPattern {
+  private enum FetchVarDeclsError: Error {
+    case insufficientCapacity(Int)
+  }
+
+  private func fetchVarDecls(capacity: Int) throws -> [BridgedVarDecl] {
+    return try Array(unsafeUninitializedCapacity: capacity) { buffer, initializedCount in
+      let fullCount = self.unsafeFetchVarDecls(
+        into: buffer.baseAddress,
+        capacity: buffer.count
+      )
+
+      guard fullCount <= buffer.count else {
+        throw FetchVarDeclsError.insufficientCapacity(fullCount)
+      }
+
+      // `unsafeFetchVarDecls` writes nothing if `fullCount` > `capacity`, so
+      // it's correct to put this after the `throw`.
+      initializedCount = fullCount
+    }
+  }
+
+  var varDecls: [BridgedVarDecl] {
+    do {
+      return try fetchVarDecls(capacity: 8) // "probably big enough" guess
+    }
+    catch FetchVarDeclsError.insufficientCapacity(let neededCapacity) {
+      return try! fetchVarDecls(capacity: neededCapacity)
+    }
+    catch {
+      fatalError("Unknown error \(error)")
+    }
+  }
+}
+
+extension BridgedDeclAttributes {
+  var attrs: UnfoldSequence<BridgedDeclAttribute, BridgedNullableDeclAttribute> {
+    return sequence(state: nil) { prior in
+      prior = self.attr(after: prior)
+      return BridgedDeclAttribute(prior)
+    }
+  }
+}
+
 /// Helper collection type that lazily concatenates two collections.
 struct ConcatCollection<C1: Collection, C2: Collection> where C1.Element == C2.Element {
   let c1: C1
@@ -291,6 +353,56 @@ extension ConcatCollection: LazyCollectionProtocol {
     switch i {
     case .c1(let i): return c1[i]
     case .c2(let i): return c2[i]
+    }
+  }
+}
+
+enum BridgedNominalTypeOrExtensionDecl {
+  case nominalType(BridgedNominalTypeDecl)
+  case `extension`(BridgedExtensionDecl)
+
+  var asDeclContext: BridgedDeclContext {
+    switch self {
+    case .nominalType(let decl):
+      return decl.asDeclContext
+    case .extension(let decl):
+      return decl.asDeclContext
+    }
+  }
+
+  func setParsedMembers(_ members: BridgedArrayRef) {
+    switch self {
+    case .nominalType(let decl):
+      decl.setParsedMembers(members)
+    case .extension(let decl):
+      decl.setParsedMembers(members)
+    }
+  }
+
+  var asDecl: BridgedDecl {
+    switch self {
+    case .nominalType(let decl):
+      decl.asDecl
+    case .extension(let decl):
+      decl.asDecl
+    }
+  }
+
+  var asNominalTypeDecl: BridgedNominalTypeDecl? {
+    switch self {
+    case .nominalType(let decl):
+      decl
+    case .extension:
+      nil
+    }
+  }
+
+  var asExtensionDecl: BridgedExtensionDecl? {
+    switch self {
+    case .nominalType:
+      nil
+    case .extension(let decl):
+      decl
     }
   }
 }
