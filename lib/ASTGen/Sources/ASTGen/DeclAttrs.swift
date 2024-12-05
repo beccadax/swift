@@ -104,6 +104,8 @@ extension ASTGenVisitor {
       let attrName = identTy.name.rawText
       let attrKind = BridgedDeclAttrKind(from: attrName.bridged)
       switch attrKind {
+      case .ABI:
+        return self.generateABIAttr(attribute: node)?.asDeclAttribute
       case .alignment:
         return self.generateAlignmentAttr(attribute: node)?.asDeclAttribute
       case .available:
@@ -316,6 +318,11 @@ extension ASTGenVisitor {
     }
 
     return self.generateCustomAttr(attribute: node, initContext: &initContext)?.asDeclAttribute
+  }
+
+  func generateABIAttr(attribute node: AttributeSyntax) -> BridgedABIAttr? {
+    #warning("TODO: implement generateABIAttr")
+    fatalError("TODO: implement generateABIAttr")
   }
 
   func generateAlignmentAttr(attribute node: AttributeSyntax) -> BridgedAlignmentAttr? {
