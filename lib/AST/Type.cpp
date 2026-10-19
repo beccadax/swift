@@ -3362,6 +3362,81 @@ getObjCObjectRepresentable(Type type, const DeclContext *dc) {
   return ForeignRepresentableKind::None;
 }
 
+/// Determine whether \p type is an array as ClangImporter imports a C array: an
+/// \c InlineArray, a homogeneous tuple (the legacy projection), or a
+/// \c swift_newtype wrapping one of those.
+///
+/// Arrays decay to pointers in C, so these are only representable behind a
+/// pointer; see \c isRepresentableBehindPointer().
+static bool isCArrayLike(Type type) {
+  if (type->getInlineArrayElementType())
+    return true;
+
+  if (auto tuple = type->getAs<TupleType>()) {
+    return tuple->getNumElements() > 1 && tuple->isHomogeneous();
+  }
+
+  if (auto *nominal = type->getAnyNominal())
+    if (nominal->hasClangNode())
+      if (auto underlying = type->getSwiftNewtypeUnderlyingType())
+        return isCArrayLike(underlying);
+
+  return false;
+}
+
+/// Determine whether \p type can be the pointee of a pointer, or the element of
+/// a C array, in \p language. Unlike \c isTriviallyRepresentableIn(), this
+/// accepts C arrays.
+///
+/// \param allowHiddenCArrayProjection Whether to accept the C array projection
+///        that isn't visible, too. See \c Type::getForeignRepresentableIn().
+/// \param isArrayElement Whether \p type is the element of a C array. Unlike a
+///        pointee, an array element can't be an object or block pointer:
+///        Objective-C ARC can't infer an ownership qualifier for it.
+static bool isRepresentableBehindPointer(Type type, ForeignLanguage language,
+                                         const DeclContext *dc,
+                                         bool allowHiddenCArrayProjection,
+                                         bool isArrayElement = false) {
+  // Only the projection that ClangImporter makes visible is representable;
+  // the other one is a different spelling of the same C type.
+  auto visibleProjection =
+      dc->getASTContext().getClangModuleLoader()->getVisibleCArrayProjection();
+
+  if (auto element = type->getInlineArrayElementType()) {
+    // The size has to be known to print the type.
+    return (allowHiddenCArrayProjection ||
+            visibleProjection == CArrayProjection::Modern) &&
+           type->getInlineArrayCount() &&
+           isRepresentableBehindPointer(element, language, dc,
+                                        allowHiddenCArrayProjection,
+                                        /*isArrayElement=*/true);
+  }
+
+  if (isCArrayLike(type)) {
+    if (auto tuple = type->getAs<TupleType>())
+      return (allowHiddenCArrayProjection ||
+              visibleProjection == CArrayProjection::Legacy) &&
+             isRepresentableBehindPointer(tuple->getElementType(0), language,
+                                          dc, allowHiddenCArrayProjection,
+                                          /*isArrayElement=*/true);
+
+    // A swift_newtype of an array. Its underlying type is the same in either
+    // projection, so don't hold it to the visible one.
+    return isRepresentableBehindPointer(type->getSwiftNewtypeUnderlyingType(),
+                                        language, dc,
+                                        /*allowHiddenCArrayProjection=*/true,
+                                        isArrayElement);
+  }
+
+  if (isArrayElement)
+    return type->getForeignRepresentableIn(language, dc,
+                                           allowHiddenCArrayProjection).first ==
+           ForeignRepresentableKind::Trivial;
+
+  return type->isTriviallyRepresentableIn(language, dc,
+                                          allowHiddenCArrayProjection);
+}
+
 /// Determine the foreign representation of this type.
 ///
 /// This function determines when and how a particular type is mapped
@@ -3370,7 +3445,8 @@ getObjCObjectRepresentable(Type type, const DeclContext *dc) {
 /// properly printed for (Objective-)C and in SIL's bridging logic.
 static std::pair<ForeignRepresentableKind, ProtocolConformance *>
 getForeignRepresentable(Type type, ForeignLanguage language,
-                        const DeclContext *dc) {
+                        const DeclContext *dc,
+                        bool allowHiddenCArrayProjection) {
   // Local function that simply produces a failing result.
   auto failure = []() -> std::pair<ForeignRepresentableKind,
                                    ProtocolConformance *> {
@@ -3442,7 +3518,8 @@ getForeignRepresentable(Type type, ForeignLanguage language,
     //
     // Returns true on failure.
     auto recurse = [&](Type componentType) -> bool {
-      switch (componentType->getForeignRepresentableIn(language, dc).first) {
+      switch (componentType->getForeignRepresentableIn(
+                  language, dc, allowHiddenCArrayProjection).first) {
       case ForeignRepresentableKind::None:
         return true;
 
@@ -3528,11 +3605,17 @@ getForeignRepresentable(Type type, ForeignLanguage language,
       return failure();
     
     auto typeArgument = boundGenericType->getGenericArgs()[0];
-    if (typeArgument->isTriviallyRepresentableIn(language, dc))
+    if (typeArgument->isTriviallyRepresentableIn(language, dc,
+                                                  allowHiddenCArrayProjection))
       return { ForeignRepresentableKind::Trivial, nullptr };
 
     return failure();
   }
+
+  // Arrays decay to pointers in C, so they can't be passed or returned by
+  // value, even if they were imported from Clang.
+  if (nominal->hasClangNode() && isCArrayLike(type))
+    return failure();
 
   // If the type was imported from Clang, check whether it is
   // representable in the requested language.
@@ -3594,7 +3677,8 @@ getForeignRepresentable(Type type, ForeignLanguage language,
                        ->getSwiftNewtypeUnderlyingType();
             if (underlyingType) {
               return getForeignRepresentable(OptionalType::get(underlyingType),
-                                             language, dc);
+                                             language, dc,
+                                             allowHiddenCArrayProjection);
             }
             return failure();
           }
@@ -3619,10 +3703,20 @@ getForeignRepresentable(Type type, ForeignLanguage language,
     case PTK_UnsafeRawPointer:
     case PTK_UnsafeMutablePointer:
     case PTK_UnsafePointer:
+      // A pointer to a C array is a pointer to its first element's array type,
+      // e.g. `int (*)[4]`.
+      if (isCArrayLike(pointerElt))
+        return isRepresentableBehindPointer(pointerElt, language, dc,
+                                          allowHiddenCArrayProjection)
+                   ? std::make_pair(ForeignRepresentableKind::Trivial,
+                                    (ProtocolConformance *)nullptr)
+                   : failure();
+
       // An UnsafeMutablePointer<T> or UnsafePointer<T> is
       // representable if T is trivially representable or Void.
       if (pointerElt->isVoid() ||
-          pointerElt->isTriviallyRepresentableIn(language, dc))
+          pointerElt->isTriviallyRepresentableIn(language, dc,
+                                                 allowHiddenCArrayProjection))
         return { ForeignRepresentableKind::Trivial, nullptr };
 
       return failure();
@@ -3671,7 +3765,8 @@ getForeignRepresentable(Type type, ForeignLanguage language,
         continue;
 
       // And must be representable either an object or bridged.
-      switch (typeArg->getForeignRepresentableIn(language, dc).first) {
+      switch (typeArg->getForeignRepresentableIn(
+                  language, dc, allowHiddenCArrayProjection).first) {
       case ForeignRepresentableKind::None:
       case ForeignRepresentableKind::StaticBridged:
         return failure();
@@ -3714,13 +3809,17 @@ getForeignRepresentable(Type type, ForeignLanguage language,
 
 std::pair<ForeignRepresentableKind, ProtocolConformance *>
 TypeBase::getForeignRepresentableIn(ForeignLanguage language,
-                                    const DeclContext *dc) {
-  return getForeignRepresentable(Type(this), language, dc);
+                                    const DeclContext *dc,
+                                    bool allowHiddenCArrayProjection) {
+  return getForeignRepresentable(Type(this), language, dc,
+                                 allowHiddenCArrayProjection);
 }
 
 bool TypeBase::isRepresentableIn(ForeignLanguage language,
-                                 const DeclContext *dc) {
-  switch (getForeignRepresentableIn(language, dc).first) {
+                                 const DeclContext *dc,
+                                 bool allowHiddenCArrayProjection) {
+  switch (getForeignRepresentableIn(language, dc,
+                                    allowHiddenCArrayProjection).first) {
   case ForeignRepresentableKind::None:
     return false;
 
@@ -3736,8 +3835,10 @@ bool TypeBase::isRepresentableIn(ForeignLanguage language,
 }
 
 bool TypeBase::isTriviallyRepresentableIn(ForeignLanguage language,
-                                          const DeclContext *dc) {
-  switch (getForeignRepresentableIn(language, dc).first) {
+                                          const DeclContext *dc,
+                                          bool allowHiddenCArrayProjection) {
+  switch (getForeignRepresentableIn(language, dc,
+                                    allowHiddenCArrayProjection).first) {
   case ForeignRepresentableKind::None:
   case ForeignRepresentableKind::Bridged:
   case ForeignRepresentableKind::BridgedError:

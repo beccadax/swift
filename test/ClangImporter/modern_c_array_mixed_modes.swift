@@ -230,9 +230,8 @@ import CLib
   print("U", ptr.pointee.array.0, ptr.pointee.array.1, ptr.pointee.array.2, ptr.pointee.array.3)
 }
 
-// FIXME: This can't be `@c @implementation public` until `@c` allows C arrays
-@c(print_row) @usableFromInline internal func printRowImpl(_ ptr: UnsafePointer<Int32>!) {
-  print("Row", ptr[0], ptr[1], ptr[2], ptr[3])
+@c(print_row) @implementation public func print_row(_ ptr: UnsafePointer<Row>!) {
+  print("Row", ptr.pointee.0, ptr.pointee.1, ptr.pointee.2, ptr.pointee.3)
 }
 
 //--- src/ModernLib.swift
