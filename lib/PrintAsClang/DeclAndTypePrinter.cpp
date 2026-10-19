@@ -134,7 +134,15 @@ class DeclAndTypePrinter::Implementation
   DeclAndTypePrinter &owningPrinter;
   OutputLanguageMode outputLang;
 
-  SmallVector<const FunctionType *, 4> openFunctionTypes;
+  /// A part of a C declarator that has to be printed after the declared name
+  /// (if any): the parameter list of a function type, or the dimensions of the
+  /// array that a pointer points to.
+  struct OpenDeclarator {
+    const FunctionType *function = nullptr;
+    SmallVector<uint64_t, 2> arrayDimensions;
+  };
+
+  SmallVector<OpenDeclarator, 4> openDeclarators;
 
   ASTContext &getASTContext() const {
     return owningPrinter.M.getASTContext();
@@ -2673,12 +2681,52 @@ private:
 
     auto args = BGT->getGenericArgs();
     assert(args.size() == 1);
-    visitPart(args.front(), OTK_None);
+
+    // A pointer to a C array is printed `int (*)[4]`.
+    SmallVector<uint64_t, 2> arrayDimensions;
+    Type pointee = getCArrayElementType(args.front(), arrayDimensions);
+    visitPart(pointee, OTK_None);
     if (isConst)
       os << " const";
-    os << " *";
+    if (!arrayDimensions.empty())
+      os << " (";
+    else
+      os << ' ';
+    os << '*';
     printNullability(optionalKind);
+    if (!arrayDimensions.empty()) {
+      OpenDeclarator open;
+      open.arrayDimensions = std::move(arrayDimensions);
+      openDeclarators.push_back(std::move(open));
+    }
     return true;
+  }
+
+  /// If \p type is a C array that ClangImporter imported as an `InlineArray` or
+  /// a homogeneous tuple, collect its dimensions and return the innermost
+  /// element type. Otherwise, leave \p dimensions empty and return \p type.
+  static Type getCArrayElementType(Type type,
+                                   SmallVectorImpl<uint64_t> &dimensions) {
+    while (true) {
+      if (auto element = type->getInlineArrayElementType()) {
+        auto count = type->getInlineArrayCount();
+        assert(count && "pointer to InlineArray with unknown size is not "
+                        "representable");
+        dimensions.push_back(count->getZExtValue());
+        type = element;
+        continue;
+      }
+
+      if (auto tuple = type->getAs<TupleType>()) {
+        if (tuple->getNumElements() >= 2) {
+          dimensions.push_back(tuple->getNumElements());
+          type = tuple->getElementType(0);
+          continue;
+        }
+      }
+
+      return type;
+    }
   }
 
   void
@@ -2898,7 +2946,9 @@ private:
     visitPart(FT->getResult(), OTK_None);
     os << " (" << pointerSigil;
     printNullability(optionalKind);
-    openFunctionTypes.push_back(FT);
+    OpenDeclarator open;
+    open.function = FT;
+    openDeclarators.push_back(std::move(open));
   }
 
   void visitFunctionType(FunctionType *FT,
@@ -2914,6 +2964,14 @@ private:
     case AnyFunctionType::Representation::CFunctionPointer:
       printFunctionType(FT, '*', optionalKind);
     }
+  }
+
+  /// Print the part of a pointer to an array that appears after where the
+  /// variable name would go.
+  void finishArrayType(ArrayRef<uint64_t> dimensions) {
+    os << ')';
+    for (uint64_t dimension : dimensions)
+      os << '[' << dimension << ']';
   }
 
   /// Print the part of a function type that appears after where the variable
@@ -2989,23 +3047,26 @@ private:
   /// RAII class for printing multi-part C types, such as functions and arrays.
   class PrintMultiPartType {
     PrinterImpl &Printer;
-    decltype(PrinterImpl::openFunctionTypes) savedFunctionTypes;
+    decltype(PrinterImpl::openDeclarators) savedDeclarators;
 
     PrintMultiPartType(const PrintMultiPartType &) = delete;
   public:
     explicit PrintMultiPartType(PrinterImpl &Printer)
       : Printer(Printer) {
-      savedFunctionTypes.swap(Printer.openFunctionTypes);
+      savedDeclarators.swap(Printer.openDeclarators);
     }
 
     void finish() {
-      auto &openFunctionTypes = Printer.openFunctionTypes;
-      while (!openFunctionTypes.empty()) {
-        const FunctionType *openFunctionTy = openFunctionTypes.pop_back_val();
-        Printer.finishFunctionType(openFunctionTy);
+      auto &openDeclarators = Printer.openDeclarators;
+      while (!openDeclarators.empty()) {
+        auto open = openDeclarators.pop_back_val();
+        if (open.function)
+          Printer.finishFunctionType(open.function);
+        else
+          Printer.finishArrayType(open.arrayDimensions);
       }
-      openFunctionTypes = std::move(savedFunctionTypes);
-      savedFunctionTypes.clear();
+      openDeclarators = std::move(savedDeclarators);
+      savedDeclarators.clear();
     }
 
     ~PrintMultiPartType() {
