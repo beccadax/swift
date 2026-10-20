@@ -169,6 +169,14 @@ adopter.showBuf(&array)
 let proto: any P = adopter
 proto.showBuf(&array)
 
+class Conformer: NSObject, P {
+  func showBuf(_ array: UnsafeMutablePointer<(Int32, Int32, Int32, Int32)>) {
+    print("Conformer", array.pointee.0, array.pointee.1, array.pointee.2, array.pointee.3)
+  }
+}
+let conformer: any P = Conformer()
+conformer.showBuf(&array)
+
 print("legacyAsyncFunc:")
 await legacyAsyncFunc()
 
@@ -206,6 +214,14 @@ adopter.showBuf(&array)
 let proto: any P = adopter
 proto.showBuf(&array)
 
+class Conformer: NSObject, P {
+  func showBuf(_ array: UnsafeMutablePointer<InlineArray<4, Int32>>) {
+    print("Conformer", array.pointee[0], array.pointee[1], array.pointee[2], array.pointee[3])
+  }
+}
+let conformer: any P = Conformer()
+conformer.showBuf(&array)
+
 print("legacyAsyncFunc:")
 await legacyAsyncFunc()
 
@@ -228,6 +244,7 @@ printSvc(asyncResult)
 // OUTPUT-NEXT: main:
 // OUTPUT-NEXT: Adopter 2147483647 1 2 3
 // OUTPUT-NEXT: Adopter 2147483647 1 2 3
+// OUTPUT-NEXT: Conformer 2147483647 1 2 3
 // OUTPUT-NEXT: legacyAsyncFunc:
 // OUTPUT-NEXT: Svc 2 2 3 4
 // OUTPUT-NEXT: modernAsyncFunc:

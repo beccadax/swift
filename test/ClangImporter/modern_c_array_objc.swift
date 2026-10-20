@@ -294,6 +294,24 @@ func testAsync(
   // expected-legacy-c-array-note@-2 {{arguments to generic parameter 'Pointee' ('(CInt, CInt, CInt, CInt)' (aka '(Int32, Int32, Int32, Int32)') and 'InlineArray<4, Int32>') are expected to be equal}}
 }
 
+// Conforming from Swift
+
+@available(anyAppleOS 26, *)
+class ModernWitness: NSObject, P {
+  // expected-legacy-c-array-error@-1 {{type 'ModernWitness' does not conform to protocol 'P'}}
+  // expected-legacy-c-array-note@-2 {{add stubs for conformance}}
+  func protoTakes(_ array: UnsafeMutablePointer<InlineArray<4, Int32>>) {}
+  // expected-legacy-c-array-note@-1 {{candidate has non-matching type '(UnsafeMutablePointer<InlineArray<4, Int32>>) -> ()'}}
+}
+
+@available(anyAppleOS 26, *)
+class LegacyWitness: NSObject, P {
+  // expected-modern-c-array-error@-1 {{type 'LegacyWitness' does not conform to protocol 'P'}}
+  // expected-modern-c-array-note@-2 {{add stubs for conformance}}
+  func protoTakes(_ array: UnsafeMutablePointer<(Int32, Int32, Int32, Int32)>) {}
+  // expected-modern-c-array-note@-1 {{candidate has non-matching type '(UnsafeMutablePointer<(Int32, Int32, Int32, Int32)>) -> ()'}}
+}
+
 @available(anyAppleOS 26, *)
 func testMirroredInitAndSubscript(
     tuple: UnsafeMutablePointer<(Int32, Int32, Int32, Int32)>,
@@ -475,6 +493,26 @@ func testMirroredInitAndSubscript(
 
   _ = table[0]
   table[1] = pointer
+}
+
+#if MODERN_C_ARRAYS
+typealias Witness = InlineArray<4, Int32>
+#else
+typealias Witness = (Int32, Int32, Int32, Int32)
+#endif
+
+// Conforming from Swift and using the class
+
+@available(anyAppleOS 26, *)
+class Conformer: NSObject, P {
+  func protoTakes(_ array: UnsafeMutablePointer<Witness>) {}
+}
+
+@available(anyAppleOS 26, *)
+func testConformer(_ conformer: Conformer, _ pointer: UnsafeMutablePointer<Witness>) {
+  conformer.protoTakes(pointer)
+  let existential: any P = conformer
+  existential.protoTakes(pointer)
 }
 
 #if MODERN_C_ARRAYS

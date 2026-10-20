@@ -2203,7 +2203,11 @@ RequirementCheck WitnessChecker::checkWitness(ValueDecl *requirement,
 /// Retrieve the Objective-C method key from the given function.
 ObjCRequirementMap::MethodKey
 ObjCRequirementMap::getObjCMethodKey(AbstractFunctionDecl *func) {
-  return std::make_pair(func->getObjCSelector(), func->isInstanceMember());
+  auto projection = CArrayProjection::Modern;
+  if (auto *attr = func->getAttrs().getAttribute<CArrayProjectionAttr>())
+    projection = attr->getProjection();
+  return std::make_tuple(func->getObjCSelector(), func->isInstanceMember(),
+                         projection);
 }
 
 /// Precompute map for getObjCRequirements().
@@ -2224,6 +2228,18 @@ ObjCRequirementMapRequest::evaluate(Evaluator &evaluator,
   }
 
   return map;
+}
+
+/// Whether \p requirement is the projection of a requirement with C arrays that
+/// isn't visible in the current mode. Conformances only have to witness the
+/// visible projection.
+static bool isHiddenCArrayProjection(const ValueDecl *requirement) {
+  auto *attr = requirement->getAttrs().getAttribute<CArrayProjectionAttr>();
+  if (!attr)
+    return false;
+
+  auto *clangLoader = requirement->getASTContext().getClangModuleLoader();
+  return clangLoader->getVisibleCArrayProjection() != attr->getProjection();
 }
 
 /// @returns a non-null requirement if the given requirement is part of a
@@ -4536,6 +4552,11 @@ static bool allowOptionalWitness(ProtocolDecl *proto,
 
   // An 'unavailable' requirement is treated like an optional requirement.
   if (requirement->isUnavailable())
+    return true;
+
+  // The hidden projection of a requirement with C arrays is witnessed by
+  // the visible one.
+  if (isHiddenCArrayProjection(requirement))
     return true;
 
   // A requirement with a satisfied Obj-C alternative requirement is effectively

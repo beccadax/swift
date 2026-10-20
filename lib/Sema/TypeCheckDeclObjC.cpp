@@ -364,7 +364,8 @@ static void diagnoseFunctionParamNotRepresentable(
 
 static bool isParamListRepresentableInLanguage(const AbstractFunctionDecl *AFD,
                                                const ParameterList *PL,
-                                               ObjCReason Reason) {
+                                               ObjCReason Reason,
+                                               bool allowHiddenCArrayProjection) {
   // If you change this function, you must add or modify a test in PrintAsClang.
   ASTContext &ctx = AFD->getASTContext();
   auto &diags = ctx.Diags;
@@ -407,11 +408,13 @@ static bool isParamListRepresentableInLanguage(const AbstractFunctionDecl *AFD,
     if (param->hasAttachedPropertyWrapper()) {
       if (param->getPropertyWrapperBackingPropertyType()->isRepresentableIn(
           language,
-          const_cast<AbstractFunctionDecl *>(AFD)))
+          const_cast<AbstractFunctionDecl *>(AFD),
+          allowHiddenCArrayProjection))
         continue;
     } else if (param->getTypeInContext()->isRepresentableIn(
           language,
-          const_cast<AbstractFunctionDecl *>(AFD))) {
+          const_cast<AbstractFunctionDecl *>(AFD),
+          allowHiddenCArrayProjection)) {
       continue;
     }
 
@@ -689,6 +692,29 @@ static bool isValidObjectiveCErrorResultType(DeclContext *dc, Type type) {
   llvm_unreachable("Unhandled ForeignRepresentableKind in switch.");
 }
 
+static bool isObjCOverride(const ValueDecl *VD) {
+  if (auto *overridden = VD->getOverriddenDecl())
+    if (overridden->isObjC())
+      return true;
+  return false;
+}
+
+/// Whether this declaration should be allowed to use C array types that don't
+/// match the visible projection (e.g. tuples in modern mode). This is done for
+/// things like overrides and protocol witnesses, where the signature must match
+/// another declaration which may have been compiled in a different mode.
+static bool shouldAllowHiddenCArrayProjection(const ValueDecl *VD,
+                                              ObjCReason Reason) {
+  // If these reasons are present, we can trust them.
+  if (Reason == ObjCReason::WitnessToObjC ||
+      Reason == ObjCReason::OverridesObjC)
+    return true;
+
+  // Otherwise, we need a deeper check for e.g. an `@objc override` method.
+  return isObjCOverride(VD) ||
+         !findWitnessedObjCRequirements(VD, /*single=*/true).empty();
+}
+
 bool swift::isRepresentableInLanguage(
     const AbstractFunctionDecl *AFD, ObjCReason Reason,
     std::optional<ForeignAsyncConvention> &asyncConvention,
@@ -829,6 +855,9 @@ bool swift::isRepresentableInLanguage(
     }
   }
 
+  bool allowHiddenCArrayProjection =
+      shouldAllowHiddenCArrayProjection(AFD, Reason);
+
   // As a special case, an initializer with a single, named parameter of type
   // '()' is always representable in Objective-C. This allows us to cope with
   // zero-parameter methods with selectors that are longer than "init". For
@@ -846,7 +875,8 @@ bool swift::isRepresentableInLanguage(
   if (!isSpecialInit &&
       !isParamListRepresentableInLanguage(AFD,
                                           AFD->getParameters(),
-                                          Reason)) {
+                                          Reason,
+                                          allowHiddenCArrayProjection)) {
     return false;
   }
 
@@ -856,8 +886,8 @@ bool swift::isRepresentableInLanguage(
         !ResultType->hasError() &&
         !ResultType->isVoid() &&
         !ResultType->isUninhabited() &&
-        !ResultType->isRepresentableIn(language,
-                                       const_cast<FuncDecl *>(FD))) {
+        !ResultType->isRepresentableIn(language, const_cast<FuncDecl *>(FD),
+                                       allowHiddenCArrayProjection)) {
       softenIfAccessNote(AFD, Reason.getAttr(),
        AFD->diagnose(diag::objc_invalid_on_func_result_type,
                      FD, getObjCDiagnosticAttrKind(Reason),
@@ -931,7 +961,8 @@ bool swift::isRepresentableInLanguage(
       completionHandlerParams.push_back(AnyFunctionType::Param(type));
 
       // Make sure that the parameter type is representable in Objective-C.
-      if (!type->isRepresentableIn(language, const_cast<FuncDecl *>(FD))) {
+      if (!type->isRepresentableIn(language, const_cast<FuncDecl *>(FD),
+                                   allowHiddenCArrayProjection)) {
         softenIfAccessNote(AFD, Reason.getAttr(),
           AFD->diagnose(diag::objc_invalid_on_func_result_type,
                         FD, getObjCDiagnosticAttrKind(Reason),
@@ -1238,9 +1269,12 @@ bool swift::isRepresentableInObjC(const VarDecl *VD, ObjCReason Reason) {
   }
   ASTContext &ctx = VD->getASTContext();
   DiagnosticStateRAII diagState(ctx.Diags);
+  bool allowHiddenCArrayProjection =
+      shouldAllowHiddenCArrayProjection(VD, Reason);
 
   bool Result = T->isRepresentableIn(ForeignLanguage::ObjectiveC,
-                                     VD->getDeclContext());
+                                     VD->getDeclContext(),
+                                     allowHiddenCArrayProjection);
 
   if (Result && checkObjCInExtensionContext(VD, Reason))
     return false;
@@ -1353,13 +1387,17 @@ bool swift::isRepresentableInObjC(const SubscriptDecl *SD, ObjCReason Reason) {
   if (IndexType->hasError())
     return false;
 
+  bool allowHiddenCArrayProjection =
+      shouldAllowHiddenCArrayProjection(SD, Reason);
   bool IndexResult =
     IndexType->isRepresentableIn(ForeignLanguage::ObjectiveC,
-                                 SD->getDeclContext());
+                                 SD->getDeclContext(),
+                                 allowHiddenCArrayProjection);
 
   Type ElementType = SD->getElementInterfaceType();
   bool ElementResult = ElementType->isRepresentableIn(
-        ForeignLanguage::ObjectiveC, SD->getDeclContext());
+        ForeignLanguage::ObjectiveC, SD->getDeclContext(),
+        allowHiddenCArrayProjection);
   bool Result = IndexResult && ElementResult;
 
   if (Result && checkObjCInExtensionContext(SD, Reason))
@@ -1712,7 +1750,7 @@ shouldMarkAsObjC(const ValueDecl *VD, bool allowImplicit,
     return ObjCReason(ObjCReason::MemberOfObjCMembersClass);
 
   // An override of an @objc declaration is implicitly @objc.
-  if (VD->getOverriddenDecl() && VD->getOverriddenDecl()->isObjC())
+  if (isObjCOverride(VD))
     return ObjCReason(ObjCReason::OverridesObjC);
   // A witness to an @objc protocol requirement is implicitly @objc.
   if (VD->getDeclContext()->getSelfClassDecl()) {
@@ -3668,15 +3706,32 @@ private:
     restriction->emitNoteForDecl(ext);
   }
 
+  /// Is this member hidden because it doesn't match the visible C array
+  /// projection (e.g. it's a legacy projection and we're in modern mode)?
+  static bool isHiddenCArrayProjection(const ValueDecl *VD) {
+    auto *attr = VD->getAttrs().getAttribute<CArrayProjectionAttr>();
+    if (!attr)
+      return false;
+
+    auto *clangLoader = VD->getASTContext().getClangModuleLoader();
+    return clangLoader->getVisibleCArrayProjection() != attr->getProjection();
+  }
+
   void addRequirement(Decl *D) {
     auto VD = dyn_cast<ValueDecl>(D);
     if (!VD)
+      return;
+
+    // Skip the hidden projections of members with C array pointers in their
+    // signatures.
+    if (isHiddenCArrayProjection(VD))
       return;
 
     // Also skip overrides, unless they override an unavailable decl, which
     // makes them not formally overrides anymore.
     if (VD->getOverriddenDecl() && !VD->getOverriddenDecl()->isUnavailable())
       return;
+
 
     // Skip members that Swift can never use, like alternate Swift names for
     // other language modes. Members that are unavailable in a platform or
